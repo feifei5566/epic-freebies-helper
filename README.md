@@ -18,7 +18,7 @@
 完全免费。  
 用 GitHub Actions 就能自动领取 Epic 周免，不需要服务器，不需要本地挂机。
 
-本项目基于社区开源方案持续完善，并接入了国产 `GLM` 多模态模型。实测可稳定处理登录、验证码和领取流程；对于不方便注册 Google AI Studio、难以使用 Gemini API 的用户，GLM 路线更省心，`0` 成本即可跑通。
+本项目基于社区开源方案持续完善，当前默认使用 `Gemini / AiHubMix` 多模态模型，也保留了 `GLM` 兼容路线。实测可稳定处理登录、验证码和领取流程；如果你已经有 Gemini 或 AiHubMix Key，通常不需要改代码，直接配置就能跑通。
 
 **如果你选择 `GLM` 路线，请先确认对应智谱账号已经完成实名认证，否则通常无法正常使用 API。**
 
@@ -42,15 +42,19 @@
 
 ---
 
-## 为什么推荐 GLM
+## 模型路线说明
 
-如果你是第一次接触这类项目，直接从 GLM 开始会更容易跑通。核心原因很简单：
+当前仓库默认走 `Gemini / AiHubMix`，如果你只是想尽快跑起来，优先按 Gemini 配置即可。选择这一条路线的原因是：
 
-- 配置更少：主要只要设置 `GLM_API_KEY` 和 `GLM_MODEL`。
-- 成本更低：`glm-4.6v` 的免费额度通常足够覆盖周免领取场景。
-- 更稳：`glm-4.6v-flash` 在高峰期偶尔会报“该模型当前访问量过大，请您稍后重试”，建议直接使用 `glm-4.6v`。
-- 对国内用户更友好：不需要先解决 Google AI Studio 注册和可用性问题。
-- 能力已验证：登录验证码、checkout 二次验证、拖拽/点选/多选题都能正常处理。
+- 默认值已经对齐：仓库默认 `LLM_PROVIDER=gemini`，快速开始可以直接照抄。
+- 配置清晰：主要只要设置 `GEMINI_API_KEY`，其他项可先使用默认值。
+- 兼容路径已内置：底层 Gemini 适配已经在仓库里处理好了，不需要再补代码。
+
+如果你更习惯 `GLM`，仓库也仍然支持：
+
+- 把 `LLM_PROVIDER` 改成 `glm`。
+- 配置 `GLM_API_KEY`，可选再加 `GLM_BASE_URL` 和 `GLM_MODEL`。
+- 推荐使用 `glm-4.6v`，`glm-4.6v-flash` 在高峰期可能报“该模型当前访问量过大，请您稍后重试”。
 
 ---
 
@@ -58,7 +62,7 @@
 
 - Epic 账号邮箱与密码（用于登录）。
 - 关闭 Epic 账号 2FA（邮箱/短信/验证器）。
-- 注册 GLM 并准备 `GLM_API_KEY`（用于验证码识别）。
+- 准备 Gemini 或 AiHubMix Key（用于验证码识别）。
 
 ---
 
@@ -78,15 +82,13 @@
 
 进入 `Settings` -> `Secrets and variables` -> `Actions`，先填这 5 个：
 
-**如果你使用 `GLM_API_KEY`，请先确认对应智谱账号已经完成实名认证，否则 API 很可能不可用。**
-
 | Secret | 示例值 |
 | --- | --- |
 | `EPIC_EMAIL` | 你的 Epic 邮箱 |
 | `EPIC_PASSWORD` | 你的 Epic 密码 |
-| `LLM_PROVIDER` | glm |
-| `GLM_API_KEY` | 你的智谱 API Key |
-| `GLM_MODEL` | glm-4.6v |
+| `LLM_PROVIDER` | gemini |
+| `GEMINI_API_KEY` | 你的 Gemini 或 AiHubMix Key |
+| `GEMINI_MODEL` | gemini-2.5-pro |
 
 配置页面示例：
 ![GLM API获取](docs/images/tutorial/GLM-API.png)
@@ -95,10 +97,10 @@
 
 可选项：
 
-- `GLM_BASE_URL` 留空即可使用默认值。
-- 推荐把 `GLM_MODEL` 设为 `glm-4.6v`；`glm-4.6v-flash` 在高峰期可能报“该模型当前访问量过大，请您稍后重试”。
-- `CHALLENGE_CLASSIFIER_MODEL`、`IMAGE_CLASSIFIER_MODEL`、`SPATIAL_POINT_REASONER_MODEL`、`SPATIAL_PATH_REASONER_MODEL` 留空即可跟随 `GLM_MODEL`。
-- 如果要改 Gemini 路线，把 `LLM_PROVIDER` 设为 `gemini` 并配置 `GEMINI_API_KEY`。
+- `GEMINI_BASE_URL` 留空即可使用默认值 `https://aihubmix.com`。
+- `CHALLENGE_CLASSIFIER_MODEL`、`IMAGE_CLASSIFIER_MODEL`、`SPATIAL_POINT_REASONER_MODEL`、`SPATIAL_PATH_REASONER_MODEL` 留空即可跟随 `GEMINI_MODEL`。
+- 如果你改走 GLM 路线，把 `LLM_PROVIDER` 设为 `glm` 并配置 `GLM_API_KEY`。
+- 如果你使用 `GLM_API_KEY`，请先确认对应智谱账号已经完成实名认证，否则 API 很可能不可用。
 
 ### 3. 手动运行一次
 

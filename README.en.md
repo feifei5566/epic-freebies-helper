@@ -18,7 +18,7 @@ This project is aimed at regular users who want to auto-claim Epic Games weekly 
 Completely free.  
 With GitHub Actions, you can automate Epic weekly freebies without a server or a machine running 24/7.
 
-The project is built on top of community open-source work and now includes domestic `GLM` multimodal support. In practice it can handle login, captcha solving, and the claim flow reliably. If Google AI Studio or the Gemini API is inconvenient for you, the GLM path is usually easier and can often be run at `0` cost.
+The project is built on top of community open-source work and now defaults to the `Gemini / AiHubMix` multimodal route while still keeping `GLM` support available. In practice it can handle login, captcha solving, and the claim flow reliably. If you already have a Gemini or AiHubMix key, you usually do not need to touch the code at all.
 
 **If you choose the `GLM` route, make sure the related Zhipu account has already passed real-name verification, or the API may remain unavailable.**
 
@@ -42,15 +42,19 @@ If the project worked for you, feel free to leave a message here too: [🎉 Succ
 
 ---
 
-## Why GLM Is Recommended
+## Model Routing
 
-If this is your first time using a project like this, starting with GLM is usually the easiest path. The reasons are practical:
+This repository now defaults to `Gemini / AiHubMix`. If your goal is to get the project running quickly, start with the Gemini configuration first. That path is the default because:
 
-- Less configuration: in most cases you only need `GLM_API_KEY` and `GLM_MODEL`.
-- Lower cost: the free quota of `glm-4.6v` is often enough for the weekly-claim use case.
-- More stable for this project: `glm-4.6v-flash` can occasionally fail under load with "the current model is too busy", so `glm-4.6v` is the safer default.
-- Better fit for users in China: you do not need to solve Google AI Studio registration or availability first.
-- Capability already validated: login captcha, checkout verification, drag, click, and multi-select challenges have all been verified in real runs.
+- The repository defaults already match it: `LLM_PROVIDER=gemini` is now the out-of-the-box path.
+- The setup is straightforward: in most cases you only need `GEMINI_API_KEY` and can leave the rest on defaults.
+- The compatibility layer is already built in: Gemini-side request handling is wired inside the repository.
+
+If you prefer `GLM`, it is still supported:
+
+- Set `LLM_PROVIDER=glm`.
+- Configure `GLM_API_KEY`, plus `GLM_BASE_URL` and `GLM_MODEL` if needed.
+- `glm-4.6v` is still the recommended GLM model; `glm-4.6v-flash` can fail during peak traffic.
 
 ---
 
@@ -58,7 +62,7 @@ If this is your first time using a project like this, starting with GLM is usual
 
 - Your Epic account email and password.
 - Epic account 2FA must be disabled (email, SMS, or authenticator app).
-- A GLM account with `GLM_API_KEY` prepared for captcha solving.
+- A Gemini or AiHubMix key prepared for captcha solving.
 
 ---
 
@@ -78,15 +82,13 @@ In most cases, the first successful validation can be finished in about 10 minut
 
 Go to `Settings` -> `Secrets and variables` -> `Actions`, then fill in these five values first:
 
-**If you plan to use `GLM_API_KEY`, make sure the related Zhipu account has already passed real-name verification, or the API may remain unavailable.**
-
 | Secret | Example value |
 | --- | --- |
 | `EPIC_EMAIL` | Your Epic email |
 | `EPIC_PASSWORD` | Your Epic password |
-| `LLM_PROVIDER` | glm |
-| `GLM_API_KEY` | Your Zhipu API key |
-| `GLM_MODEL` | glm-4.6v |
+| `LLM_PROVIDER` | gemini |
+| `GEMINI_API_KEY` | Your Gemini or AiHubMix key |
+| `GEMINI_MODEL` | gemini-2.5-pro |
 
 Configuration page example:
 ![GLM API setup](docs/images/tutorial/GLM-API.png)
@@ -95,10 +97,10 @@ Configuration page example:
 
 Optional notes:
 
-- Leave `GLM_BASE_URL` empty to use the default value.
-- `glm-4.6v` is the recommended `GLM_MODEL`; `glm-4.6v-flash` can fail during peak traffic.
-- Leave `CHALLENGE_CLASSIFIER_MODEL`, `IMAGE_CLASSIFIER_MODEL`, `SPATIAL_POINT_REASONER_MODEL`, and `SPATIAL_PATH_REASONER_MODEL` empty if you want them to follow `GLM_MODEL`.
-- If you want the Gemini route instead, set `LLM_PROVIDER=gemini` and configure `GEMINI_API_KEY`.
+- Leave `GEMINI_BASE_URL` empty to use the default `https://aihubmix.com`.
+- Leave `CHALLENGE_CLASSIFIER_MODEL`, `IMAGE_CLASSIFIER_MODEL`, `SPATIAL_POINT_REASONER_MODEL`, and `SPATIAL_PATH_REASONER_MODEL` empty if you want them to follow `GEMINI_MODEL`.
+- If you want the GLM route instead, set `LLM_PROVIDER=glm` and configure `GLM_API_KEY`.
+- If you plan to use `GLM_API_KEY`, make sure the related Zhipu account has already passed real-name verification, or the API may remain unavailable.
 
 ### 3. Run the workflow manually once
 

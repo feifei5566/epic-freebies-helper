@@ -28,7 +28,7 @@ def _env(name: str, default: str | None = None) -> str | None:
 
 
 def _default_provider() -> str:
-    return _env("LLM_PROVIDER", "glm" if _env("GLM_API_KEY") else "gemini") or "gemini"
+    return _env("LLM_PROVIDER", "gemini") or "gemini"
 
 
 def _default_model_for_provider(provider: str) -> str:
@@ -47,7 +47,7 @@ class EpicSettings(AgentConfig):
     model_config = SettingsConfigDict(env_file=".env", env_ignore_empty=True, extra="ignore")
 
     GEMINI_API_KEY: SecretStr | None = Field(
-        default_factory=lambda: _env("GEMINI_API_KEY") or _env("GLM_API_KEY"),
+        default_factory=lambda: _env("GEMINI_API_KEY"),
         description="Gemini/AiHubMix API key",
     )
 
