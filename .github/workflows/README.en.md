@@ -29,13 +29,13 @@ Required in all cases:
 | `EPIC_EMAIL` | Epic account email, with 2FA disabled |
 | `EPIC_PASSWORD` | Epic account password, with 2FA disabled |
 
-If you use Gemini / AiHubMix:
+If you use Gemini:
 
 | Secret | Description |
 | --- | --- |
 | `LLM_PROVIDER` | Recommended value: `gemini` |
-| `GEMINI_API_KEY` | Gemini or AiHubMix key |
-| `GEMINI_BASE_URL` | Optional, defaults to `https://aihubmix.com` |
+| `GEMINI_API_KEY` | Google AI Studio Gemini key, or a compatible service key |
+| `GEMINI_BASE_URL` | Optional; leave unset for Google AI Studio, set `https://aihubmix.com` for AiHubMix |
 | `GEMINI_MODEL` | Optional, defaults to `gemini-2.5-pro` |
 
 If you use GLM:

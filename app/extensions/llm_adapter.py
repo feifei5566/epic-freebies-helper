@@ -675,14 +675,22 @@ def apply_gemini_patch(settings: Any):
         def new_init(self, *args, **kwargs):
             kwargs["api_key"] = settings.GEMINI_API_KEY.get_secret_value()
 
-            base_url = settings.GEMINI_BASE_URL.rstrip("/")
-            if base_url.endswith("/v1"):
-                base_url = base_url[:-3]
-            if not base_url.endswith("/gemini"):
-                base_url = f"{base_url}/gemini"
+            base_url = settings.GEMINI_BASE_URL
+            if base_url:
+                base_url = base_url.rstrip("/")
+                if base_url.endswith("/v1"):
+                    base_url = base_url[:-3]
+                if not base_url.endswith("/gemini"):
+                    base_url = f"{base_url}/gemini"
 
-            kwargs["http_options"] = types.HttpOptions(base_url=base_url)
-            logger.info(f"🚀 Gemini 兼容补丁已应用 | 模型: {settings.GEMINI_MODEL} | 地址: {base_url}")
+                kwargs["http_options"] = types.HttpOptions(base_url=base_url)
+                logger.info(
+                    f"🚀 Gemini 兼容补丁已应用 | 模型: {settings.GEMINI_MODEL} | 地址: {base_url}"
+                )
+            else:
+                logger.info(
+                    f"🚀 Gemini 官方端点已启用 | 模型: {settings.GEMINI_MODEL} | 地址: Google AI Studio"
+                )
             orig_init(self, *args, **kwargs)
 
         genai.Client.__init__ = new_init

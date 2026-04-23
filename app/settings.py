@@ -51,9 +51,9 @@ class EpicSettings(AgentConfig):
         description="Gemini/AiHubMix API key",
     )
 
-    GEMINI_BASE_URL: str = Field(
-        default_factory=lambda: _env("GEMINI_BASE_URL", "https://aihubmix.com"),
-        description="Gemini/AiHubMix base URL",
+    GEMINI_BASE_URL: str | None = Field(
+        default_factory=lambda: _env("GEMINI_BASE_URL"),
+        description="Optional Gemini-compatible base URL",
     )
 
     GEMINI_MODEL: str = Field(

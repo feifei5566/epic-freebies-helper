@@ -29,13 +29,13 @@
 | `EPIC_EMAIL` | Epic 邮箱，需关闭 2FA |
 | `EPIC_PASSWORD` | Epic 密码，需关闭 2FA |
 
-如果你使用 Gemini/AiHubMix：
+如果你使用 Gemini：
 
 | Secret | 说明 |
 | --- | --- |
 | `LLM_PROVIDER` | 建议设为 `gemini` |
-| `GEMINI_API_KEY` | Gemini 或 AiHubMix Key |
-| `GEMINI_BASE_URL` | 可选，默认 `https://aihubmix.com` |
+| `GEMINI_API_KEY` | Google AI Studio Gemini Key，或兼容服务的 Key |
+| `GEMINI_BASE_URL` | 可选；使用 Google AI Studio 时留空，使用 AiHubMix 时填 `https://aihubmix.com` |
 | `GEMINI_MODEL` | 可选，默认 `gemini-2.5-pro` |
 
 如果你使用 GLM：

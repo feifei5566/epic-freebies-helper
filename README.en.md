@@ -18,7 +18,7 @@ This project is aimed at regular users who want to auto-claim Epic Games weekly 
 Completely free.  
 With GitHub Actions, you can automate Epic weekly freebies without a server or a machine running 24/7.
 
-The project is built on top of community open-source work and now defaults to the `Gemini / AiHubMix` multimodal route while still keeping `GLM` support available. In practice it can handle login, captcha solving, and the claim flow reliably. If you already have a Gemini or AiHubMix key, you usually do not need to touch the code at all.
+The project is built on top of community open-source work and now defaults to official `Gemini` while still keeping `AiHubMix`-compatible access and `GLM` support available. In practice it can handle login, captcha solving, and the claim flow reliably. If you already have a Google AI Studio Gemini key, you usually do not need to touch the code at all.
 
 **If you choose the `GLM` route, make sure the related Zhipu account has already passed real-name verification, or the API may remain unavailable.**
 
@@ -44,9 +44,9 @@ If the project worked for you, feel free to leave a message here too: [🎉 Succ
 
 ## Model Routing
 
-This repository now defaults to `Gemini / AiHubMix`. If your goal is to get the project running quickly, start with the Gemini configuration first. That path is the default because:
+This repository now defaults to the official `Gemini` endpoint. If your goal is to get the project running quickly, start with the Google AI Studio Gemini configuration first. `AiHubMix` is still supported, but it is an explicit compatibility route that requires `GEMINI_BASE_URL`.
 
-- The repository defaults already match it: `LLM_PROVIDER=gemini` is now the out-of-the-box path.
+- The repository defaults already match it: `LLM_PROVIDER=gemini` is the out-of-the-box path, and leaving `GEMINI_BASE_URL` unset uses the official Gemini endpoint.
 - The setup is straightforward: in most cases you only need `GEMINI_API_KEY` and can leave the rest on defaults.
 - The compatibility layer is already built in: Gemini-side request handling is wired inside the repository.
 
@@ -62,7 +62,7 @@ If you prefer `GLM`, it is still supported:
 
 - Your Epic account email and password.
 - Epic account 2FA must be disabled (email, SMS, or authenticator app).
-- A Gemini or AiHubMix key prepared for captcha solving.
+- A Google AI Studio Gemini key, or a compatible service key, prepared for captcha solving.
 
 ---
 
@@ -87,7 +87,7 @@ Go to `Settings` -> `Secrets and variables` -> `Actions`, then fill in these fiv
 | `EPIC_EMAIL` | Your Epic email |
 | `EPIC_PASSWORD` | Your Epic password |
 | `LLM_PROVIDER` | gemini |
-| `GEMINI_API_KEY` | Your Gemini or AiHubMix key |
+| `GEMINI_API_KEY` | Your Google AI Studio Gemini key |
 | `GEMINI_MODEL` | gemini-2.5-pro |
 
 Configuration page example:
@@ -97,7 +97,8 @@ Configuration page example:
 
 Optional notes:
 
-- Leave `GEMINI_BASE_URL` empty to use the default `https://aihubmix.com`.
+- If you use the Google AI Studio free tier, do not set `GEMINI_BASE_URL`.
+- If you use a compatible service such as AiHubMix, set `GEMINI_BASE_URL` explicitly, for example `https://aihubmix.com`.
 - Leave `CHALLENGE_CLASSIFIER_MODEL`, `IMAGE_CLASSIFIER_MODEL`, `SPATIAL_POINT_REASONER_MODEL`, and `SPATIAL_PATH_REASONER_MODEL` empty if you want them to follow `GEMINI_MODEL`.
 - If you want the GLM route instead, set `LLM_PROVIDER=glm` and configure `GLM_API_KEY`.
 - If you plan to use `GLM_API_KEY`, make sure the related Zhipu account has already passed real-name verification, or the API may remain unavailable.
@@ -209,12 +210,21 @@ environment:
   - GLM_MODEL=glm-4.6v
 ```
 
-Gemini / AiHubMix example:
+Official Gemini / Google AI Studio example:
 
 ```yaml
 environment:
   - LLM_PROVIDER=gemini
   - GEMINI_API_KEY=your_key
+  - GEMINI_MODEL=gemini-2.5-pro
+```
+
+AiHubMix-compatible example:
+
+```yaml
+environment:
+  - LLM_PROVIDER=gemini
+  - GEMINI_API_KEY=your_aihubmix_key
   - GEMINI_BASE_URL=https://aihubmix.com
   - GEMINI_MODEL=gemini-2.5-pro
 ```
