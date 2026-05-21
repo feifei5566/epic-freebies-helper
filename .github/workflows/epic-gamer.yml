@@ -3,8 +3,9 @@ name: Epic Awesome Gamer (Scheduled)
 on:
   workflow_dispatch: # 手动触发
   schedule:
-    # 每天 UTC 08:00 (北京时间 16:00) 运行一次
-    - cron: '0 8 * * *'
+    # 每周四 UTC 15:20 运行一次（北京时间周四 23:20）
+    # 该时间点放在 Epic 周免刷新之后，避免过早触发。
+    - cron: '20 15 * * 4'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -12,11 +13,10 @@ env:
 jobs:
   epic-gamer:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     
-    # 🔴 [核心修改] 只有当仓库不是 '10000ge10000/epic-awesome-gamer' 时才运行
-    # 效果：你的仓库触发定时任务会直接显示 Skipped (灰色)，别人 Fork 后会正常运行 (绿色)
-    if: github.repository != '10000ge10000/epic-awesome-gamer'
+    # 默认不在主仓库自身执行定时任务；Fork 后的仓库会正常运行。
+    if: github.repository != 'Ronchy2000/epic-freebies-helper'
 
     steps:
       - name: Checkout repository
@@ -38,11 +38,16 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      # 增加 GITHUB_TOKEN 以解决 Camoufox 下载时的 403 频率限制
+      # 增加 GITHUB_TOKEN 以降低 Camoufox 下载时的 403 频率限制。
+      # 即使这里失败，运行时也可以回退到 Playwright Firefox。
       - name: Install Camoufox
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: uv run camoufox fetch
+
+      - name: Install Playwright Firefox fallback
+        run: uv run playwright install firefox
 
       - name: Run Epic Awesome Gamer
         env:
@@ -59,12 +64,28 @@ jobs:
           IMAGE_CLASSIFIER_MODEL: ${{ secrets.IMAGE_CLASSIFIER_MODEL }}
           SPATIAL_POINT_REASONER_MODEL: ${{ secrets.SPATIAL_POINT_REASONER_MODEL }}
           SPATIAL_PATH_REASONER_MODEL: ${{ secrets.SPATIAL_PATH_REASONER_MODEL }}
+          BROWSER_BACKEND: auto
           # 在 Actions 中我们依靠 GitHub 的 cron 触发，所以关闭内部调度器
           ENABLE_APSCHEDULER: false
+          MPLBACKEND: Agg
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PYTHONPATH: app
         run: |
           echo "🚀 启动定时领取任务（支持 Gemini/AiHubMix/GLM）..."
           xvfb-run --auto-servernum --server-num=1 --server-args='-screen 0, 1920x1080x24' uv run app/deploy.py
+
+      - name: Write success summary
+        if: success()
+        run: |
+          {
+            echo "## Run completed"
+            echo
+            echo "The workflow completed successfully."
+            echo
+            echo "- Share successful runs here: [Share your successful runs here / 成功领取的来这里留言！ #3](https://github.com/Ronchy2000/epic-freebies-helper/discussions/3)"
+            echo "- If the game was already in your library, Epic may not send a separate confirmation email. Review the logs and artifacts when verification is needed."
+            echo "- If you later report an issue from a private fork, upload the artifact zip files because maintainers cannot access private Actions pages."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload runtime artifacts
         if: always()
@@ -80,4 +101,12 @@ jobs:
         with:
           name: epic-logs-${{ github.run_id }}
           path: app/volumes/logs/
+          retention-days: 7
+
+      - name: Upload screenshot artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: epic-screenshots-${{ github.run_id }}
+          path: app/volumes/screenshots/
           retention-days: 7

@@ -1,0 +1,26 @@
+<svg width="1200" height="760" viewBox="0 0 1200 760" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="760" rx="20" fill="#0F172A"/>
+  <rect x="8" y="8" width="1184" height="744" rx="16" stroke="#334155" stroke-width="2"/>
+  <rect x="24" y="24" width="1152" height="44" rx="10" fill="#1E293B"/>
+  <circle cx="48" cy="46" r="8" fill="#FB7185"/>
+  <circle cx="74" cy="46" r="8" fill="#FBBF24"/>
+  <circle cx="100" cy="46" r="8" fill="#4ADE80"/>
+  <text x="126" y="52" fill="#E2E8F0" font-family="Menlo, Monaco, Consolas, monospace" font-size="22">Run Epic Awesome Gamer</text>
+
+  <text x="40" y="112" fill="#22C55E" font-family="Menlo, Monaco, Consolas, monospace" font-size="22">2026-04-23 21:20:42.608 | DEBUG   | Start Challenge - type=image_drag_single</text>
+  <text x="40" y="154" fill="#38BDF8" font-family="Menlo, Monaco, Consolas, monospace" font-size="22">2026-04-23 21:21:08.287 | DEBUG   | ToolInvokeMessage: from (960,720) to (889,547)</text>
+  <text x="40" y="196" fill="#38BDF8" font-family="Menlo, Monaco, Consolas, monospace" font-size="22">2026-04-23 21:21:09.400 | DEBUG   | Start checking captcha response</text>
+  <text x="40" y="238" fill="#F59E0B" font-family="Menlo, Monaco, Consolas, monospace" font-size="22">2026-04-23 21:21:11.798 | WARNING | Failed to challenge, try to retry the strategy</text>
+  <text x="40" y="280" fill="#22C55E" font-family="Menlo, Monaco, Consolas, monospace" font-size="22">2026-04-23 21:21:14.641 | DEBUG   | Start Challenge - type=image_drag_single</text>
+  <text x="40" y="322" fill="#38BDF8" font-family="Menlo, Monaco, Consolas, monospace" font-size="22">2026-04-23 21:21:37.344 | DEBUG   | ToolInvokeMessage: from (960,770) to (960,646)</text>
+  <text x="40" y="364" fill="#38BDF8" font-family="Menlo, Monaco, Consolas, monospace" font-size="22">2026-04-23 21:21:38.464 | DEBUG   | Start checking captcha response</text>
+  <text x="40" y="406" fill="#F59E0B" font-family="Menlo, Monaco, Consolas, monospace" font-size="22">2026-04-23 21:21:40.085 | WARNING | Failed to challenge, try to retry the strategy</text>
+  <text x="40" y="448" fill="#22C55E" font-family="Menlo, Monaco, Consolas, monospace" font-size="22">2026-04-23 21:22:14.585 | DEBUG   | Start Challenge - type=image_drag_single</text>
+  <text x="40" y="490" fill="#38BDF8" font-family="Menlo, Monaco, Consolas, monospace" font-size="22">2026-04-23 21:22:35.321 | DEBUG   | ToolInvokeMessage: from (817,547) to (1031,646)</text>
+  <text x="40" y="532" fill="#38BDF8" font-family="Menlo, Monaco, Consolas, monospace" font-size="22">2026-04-23 21:22:36.430 | DEBUG   | Start checking captcha response</text>
+  <text x="40" y="574" fill="#EF4444" font-family="Menlo, Monaco, Consolas, monospace" font-size="22">2026-04-23 21:23:06.438 | ERROR   | Wait for captcha response timeout 30.0s</text>
+
+  <rect x="28" y="610" width="1144" height="94" rx="12" fill="#1F172A" stroke="#EF4444" stroke-width="4"/>
+  <text x="60" y="665" fill="#F8FAFC" font-family="Menlo, Monaco, Consolas, monospace" font-size="28">Error: The operation was canceled.</text>
+  <text x="60" y="698" fill="#FCA5A5" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">Do not cancel too early. Repeated retries are normal, and some successful runs take 15-20 minutes.</text>
+</svg>

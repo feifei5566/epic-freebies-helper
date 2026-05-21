@@ -14,10 +14,15 @@ from pydantic import BaseModel
 KNOWN_CHALLENGE_TYPES = {
     "image_drag_single",
     "image_drag_multiple",
+    "image_drag_multi",
     "image_label_binary",
     "image_label_multi_select",
     "image_label_area_select",
     "image_label_multiple_choice",
+}
+
+CHALLENGE_TYPE_ALIASES = {
+    "image_drag_multi": "image_drag_multiple",
 }
 
 
@@ -127,6 +132,7 @@ def _normalize_glm_response_text(text: str) -> str:
 
 def _extract_challenge_type(text: str) -> str | None:
     stripped = text.strip().strip('"').strip("'")
+    stripped = CHALLENGE_TYPE_ALIASES.get(stripped, stripped)
     if stripped in KNOWN_CHALLENGE_TYPES:
         return stripped
     return None
@@ -155,6 +161,33 @@ def _extract_drag_points_from_text(text: str) -> tuple[dict[str, int], dict[str,
         sx, sy, tx, ty = map(int, source_target_object.groups())
         return ({"x": sx, "y": sy}, {"x": tx, "y": ty})
 
+    source_target_position_array = re.search(
+        r'"source_position"\s*:\s*\[\s*(\d+)\s*,\s*(\d+)\s*\][\s\S]*?"target_position"\s*:\s*\[\s*(\d+)\s*,\s*(\d+)\s*\]',
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    if source_target_position_array:
+        sx, sy, tx, ty = map(int, source_target_position_array.groups())
+        return ({"x": sx, "y": sy}, {"x": tx, "y": ty})
+
+    source_target_position_object = re.search(
+        r'"source_position"\s*:\s*\{\s*"x"\s*:\s*(\d+)\s*,\s*"y"\s*:\s*(\d+)\s*\}[\s\S]*?"target_position"\s*:\s*\{\s*"x"\s*:\s*(\d+)\s*,\s*"y"\s*:\s*(\d+)\s*\}',
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    if source_target_position_object:
+        sx, sy, tx, ty = map(int, source_target_position_object.groups())
+        return ({"x": sx, "y": sy}, {"x": tx, "y": ty})
+
+    source_target_flat = re.search(
+        r'"source_x"\s*:\s*(\d+)\s*,\s*"source_y"\s*:\s*(\d+)[\s\S]*?"target_x"\s*:\s*(\d+)\s*,\s*"target_y"\s*:\s*(\d+)',
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    if source_target_flat:
+        sx, sy, tx, ty = map(int, source_target_flat.groups())
+        return ({"x": sx, "y": sy}, {"x": tx, "y": ty})
+
     source_position = re.search(
         r"Source Position:\s*\((\d+)\s*,\s*(\d+)\)\s*,\s*Target Position:\s*\((\d+)\s*,\s*(\d+)\)",
         stripped,
@@ -168,6 +201,11 @@ def _extract_drag_points_from_text(text: str) -> tuple[dict[str, int], dict[str,
     if len(point_pairs) == 2:
         (sx, sy), (tx, ty) = point_pairs
         return ({"x": int(sx), "y": int(sy)}, {"x": int(tx), "y": int(ty)})
+
+    csv_drag = re.fullmatch(r"\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*", stripped)
+    if csv_drag:
+        sx, sy, tx, ty = map(int, csv_drag.groups())
+        return ({"x": sx, "y": sy}, {"x": tx, "y": ty})
 
     return None
 
@@ -218,6 +256,98 @@ def _coerce_point(value: Any) -> dict[str, int] | None:
     return None
 
 
+def _coerce_area_box(value: Any) -> dict[str, int] | None:
+    if isinstance(value, dict):
+        keys = {"x_min", "y_min", "x_max", "y_max"}
+        if keys.issubset(value.keys()):
+            return {
+                "x_min": int(value["x_min"]),
+                "y_min": int(value["y_min"]),
+                "x_max": int(value["x_max"]),
+                "y_max": int(value["y_max"]),
+            }
+        return None
+
+    if isinstance(value, (list, tuple)) and len(value) >= 4:
+        return {
+            "x_min": int(value[0]),
+            "y_min": int(value[1]),
+            "x_max": int(value[2]),
+            "y_max": int(value[3]),
+        }
+
+    if isinstance(value, str):
+        matches = re.findall(r"\d+", value)
+        if len(matches) >= 4:
+            x_min, y_min, x_max, y_max = map(int, matches[:4])
+            return {
+                "x_min": x_min,
+                "y_min": y_min,
+                "x_max": x_max,
+                "y_max": y_max,
+            }
+
+    return None
+
+
+def _box_center_point(box: dict[str, int]) -> dict[str, int]:
+    return {
+        "x": (box["x_min"] + box["x_max"]) // 2,
+        "y": (box["y_min"] + box["y_max"]) // 2,
+    }
+
+
+def _extract_area_boxes_from_text(text: str) -> list[dict[str, int]]:
+    stripped = text.strip()
+    if not stripped:
+        return []
+
+    with suppress(Exception):
+        payload = _extract_json_payload(stripped)
+        answer_payload = payload.get("answer")
+        if isinstance(answer_payload, list):
+            boxes = []
+            for item in answer_payload:
+                normalized = _coerce_area_box(item)
+                if normalized:
+                    boxes.append(normalized)
+            if boxes:
+                return boxes
+
+    dict_boxes = re.findall(
+        r'"x_min"\s*:\s*(\d+)\s*,\s*"y_min"\s*:\s*(\d+)\s*,\s*"x_max"\s*:\s*(\d+)\s*,\s*"y_max"\s*:\s*(\d+)',
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    if dict_boxes:
+        return [
+            {
+                "x_min": int(x_min),
+                "y_min": int(y_min),
+                "x_max": int(x_max),
+                "y_max": int(y_max),
+            }
+            for x_min, y_min, x_max, y_max in dict_boxes
+        ]
+
+    tuple_boxes = re.findall(
+        r"\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]",
+        stripped,
+    )
+    if tuple_boxes:
+        return [
+            {
+                "x_min": int(x_min),
+                "y_min": int(y_min),
+                "x_max": int(x_max),
+                "y_max": int(y_max),
+            }
+            for x_min, y_min, x_max, y_max in tuple_boxes
+        ]
+
+    return []
+
+
 def _build_points_payload(
     points: list[dict[str, int]],
     *,
@@ -231,6 +361,22 @@ def _build_points_payload(
         "challenge_prompt": challenge_prompt,
         "inferred_rule": inferred_rule,
         "points": points,
+    }
+
+
+def _build_area_select_payload(
+    boxes: list[dict[str, int]],
+    *,
+    challenge_prompt: str = "",
+    inferred_rule: str = "",
+) -> dict[str, Any] | None:
+    if not boxes:
+        return None
+
+    return {
+        "challenge_prompt": challenge_prompt,
+        "inferred_rule": inferred_rule,
+        "points": [_box_center_point(box) for box in boxes],
     }
 
 
@@ -331,12 +477,88 @@ def _coerce_payload_for_schema(payload: dict[str, Any], schema: Any, text: str) 
     challenge_prompt = str(payload.get("challenge_prompt") or "")
     inferred_rule = str(payload.get("inferred_rule") or "")
 
-    if "paths" in fields and "paths" in payload:
-        payload.setdefault("challenge_prompt", challenge_prompt)
-        payload.setdefault("inferred_rule", inferred_rule)
-        return payload
+    if "paths" in fields:
+        if "paths" in payload:
+            payload.setdefault("challenge_prompt", challenge_prompt)
+            payload.setdefault("inferred_rule", inferred_rule)
+            return payload
+
+        normalized_drag = None
+        if "source" in payload and "target" in payload:
+            normalized_drag = _build_drag_payload(
+                payload.get("source"),
+                payload.get("target"),
+                challenge_prompt=challenge_prompt,
+                inferred_rule=inferred_rule,
+            )
+        elif "from" in payload and "to" in payload:
+            normalized_drag = _build_drag_payload(
+                payload.get("from"),
+                payload.get("to"),
+                challenge_prompt=challenge_prompt,
+                inferred_rule=inferred_rule,
+            )
+        elif "source_position" in payload and "target_position" in payload:
+            normalized_drag = _build_drag_payload(
+                payload.get("source_position"),
+                payload.get("target_position"),
+                challenge_prompt=challenge_prompt,
+                inferred_rule=inferred_rule,
+            )
+        elif "start" in payload and "end" in payload:
+            normalized_drag = _build_drag_payload(
+                payload.get("start"),
+                payload.get("end"),
+                challenge_prompt=challenge_prompt,
+                inferred_rule=inferred_rule,
+            )
+
+        if not normalized_drag:
+            points_payload = payload.get("points")
+            if isinstance(points_payload, list) and len(points_payload) >= 2:
+                normalized_drag = _build_drag_payload(
+                    points_payload[0],
+                    points_payload[1],
+                    challenge_prompt=challenge_prompt,
+                    inferred_rule=inferred_rule,
+                )
+
+        if not normalized_drag:
+            extracted_drag = _extract_drag_points_from_text(text)
+            if extracted_drag:
+                normalized_drag = _build_drag_payload(
+                    extracted_drag[0],
+                    extracted_drag[1],
+                    challenge_prompt=challenge_prompt,
+                    inferred_rule=inferred_rule,
+                )
+
+        if normalized_drag:
+            return normalized_drag
 
     if "points" in fields:
+        area_payload = _build_area_select_payload(
+            _extract_area_boxes_from_text(text),
+            challenge_prompt=challenge_prompt,
+            inferred_rule=inferred_rule,
+        )
+        if area_payload:
+            return area_payload
+
+        answer_payload = payload.get("answer")
+        if isinstance(answer_payload, list):
+            boxes = []
+            for item in answer_payload:
+                normalized = _coerce_area_box(item)
+                if normalized:
+                    boxes.append(normalized)
+            if boxes:
+                return _build_area_select_payload(
+                    boxes,
+                    challenge_prompt=challenge_prompt,
+                    inferred_rule=inferred_rule,
+                )
+
         if "points" in payload:
             payload.setdefault("challenge_prompt", challenge_prompt)
             payload.setdefault("inferred_rule", inferred_rule)
@@ -398,6 +620,26 @@ def _normalize_glm_payload(payload: dict[str, Any]) -> dict[str, Any]:
         normalized = _build_drag_payload(
             payload.get("from"),
             payload.get("to"),
+            challenge_prompt=challenge_prompt,
+            inferred_rule=inferred_rule,
+        )
+        if normalized:
+            return normalized
+
+    if "source_position" in payload and "target_position" in payload:
+        normalized = _build_drag_payload(
+            payload.get("source_position"),
+            payload.get("target_position"),
+            challenge_prompt=challenge_prompt,
+            inferred_rule=inferred_rule,
+        )
+        if normalized:
+            return normalized
+
+    if "start" in payload and "end" in payload:
+        normalized = _build_drag_payload(
+            payload.get("start"),
+            payload.get("end"),
             challenge_prompt=challenge_prompt,
             inferred_rule=inferred_rule,
         )
@@ -675,9 +917,8 @@ def apply_gemini_patch(settings: Any):
         def new_init(self, *args, **kwargs):
             kwargs["api_key"] = settings.GEMINI_API_KEY.get_secret_value()
 
-            base_url = settings.GEMINI_BASE_URL
+            base_url = (settings.GEMINI_BASE_URL or "").rstrip("/")
             if base_url:
-                base_url = base_url.rstrip("/")
                 if base_url.endswith("/v1"):
                     base_url = base_url[:-3]
                 if not base_url.endswith("/gemini"):
@@ -744,6 +985,18 @@ def apply_glm_patch(settings: Any):
 def apply_llm_patch(settings: Any):
     provider = settings.LLM_PROVIDER.lower()
     if provider == "glm":
+        if not settings.GLM_API_KEY:
+            logger.error(
+                "LLM provider misconfigured | LLM_PROVIDER=glm but GLM_API_KEY is empty"
+            )
+            return
         apply_glm_patch(settings)
         return
+
+    if provider == "gemini" and not settings.GEMINI_API_KEY:
+        logger.error(
+            "LLM provider misconfigured | LLM_PROVIDER=gemini but GEMINI_API_KEY is empty"
+        )
+        return
+
     apply_gemini_patch(settings)

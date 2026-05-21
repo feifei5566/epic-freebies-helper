@@ -13,21 +13,18 @@ using browser automation and scheduling capabilities.
 import asyncio
 import json
 import signal
-import sys
 from contextlib import suppress
 from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from browserforge.fingerprints import Screen
-from camoufox import AsyncCamoufox
 from loguru import logger
-from playwright.async_api import ViewportSize
 from pytz import timezone
 
 from services.epic_authorization_service import EpicAuthorization
+from services.browser_context import open_browser_context
 from services.epic_games_service import EpicAgent
-from settings import LOG_DIR, RECORD_DIR
+from settings import LOG_DIR
 from settings import settings
 from utils import init_log
 
@@ -56,15 +53,7 @@ async def execute_browser_tasks(headless: bool = True):
     logger.debug("Starting Epic Games collection task")
 
     # Configure browser with anti-detection features and video recording
-    async with AsyncCamoufox(
-        persistent_context=True,
-        user_data_dir=settings.user_data_dir,
-        screen=Screen(max_width=1920, max_height=1080, min_height=1080, min_width=1920),
-        record_video_dir=RECORD_DIR,
-        record_video_size=ViewportSize(width=1920, height=1080),
-        humanize=0.2,
-        headless=headless,
-    ) as browser:
+    async with open_browser_context(headless=headless) as browser:
         # Initialize or reuse existing browser page
         page = browser.pages[0] if browser.pages else await browser.new_page()
         logger.debug("Browser initialized successfully")
@@ -111,6 +100,10 @@ async def deploy():
     logger.debug(
         f"Starting deployment with configuration: {json.dumps(sj, indent=2, ensure_ascii=False)}"
     )
+
+    if configuration_error := settings.llm_configuration_error:
+        logger.error(configuration_error)
+        raise RuntimeError(configuration_error)
 
     # Execute an immediate collection task
     await execute_browser_tasks(headless=headless)

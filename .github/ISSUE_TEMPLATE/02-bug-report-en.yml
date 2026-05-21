@@ -7,23 +7,30 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before submitting:
+        Before submitting, first distinguish the visibility of your fork:
 
-        1. Open the failed GitHub Actions run.
-        2. Scroll to the bottom of the run summary page.
-        3. Download both artifacts:
-           - `epic-logs-<run_id>.zip`
-           - `epic-runtime-<run_id>.zip`
-        4. Create this issue and drag both zip files into the issue comment box, or click the attachment button and upload them.
+        - If your fork is public, provide the GitHub Actions run URL.
+        - If your fork is private, upload the artifact zip files that were actually generated for that run. Maintainers cannot access private Actions pages or private run artifacts.
 
-        Please do not paste only a short log excerpt. The full artifacts are usually required to diagnose checkout, captcha, and Epic page-state problems correctly.
+        How to find the run URL:
+        Open the failed or suspicious workflow run, enter the specific job page, then copy the URL from your browser address bar and paste it below. A typical link looks like `https://github.com/<your-account>/<your-repo>/actions/runs/24829120566/job/72672761254`.
 
   - type: input
     id: workflow_run_url
     attributes:
       label: GitHub Actions run URL
-      description: Paste the full URL of the failed or suspicious workflow run
-      placeholder: https://github.com/<your-account>/<your-repo>/actions/runs/1234567890
+      description: For public forks, paste the full URL. For private forks, explain in the extra context that you uploaded the artifact zip files.
+      placeholder: https://github.com/<your-account>/<your-repo>/actions/runs/24829120566/job/72672761254
+    validations:
+      required: true
+
+  - type: dropdown
+    id: repo_visibility
+    attributes:
+      label: Fork visibility
+      options:
+        - Public fork
+        - Private fork
     validations:
       required: true
 
@@ -64,21 +71,7 @@ body:
       required: true
 
   - type: textarea
-    id: artifacts
-    attributes:
-      label: Required attachments
-      description: After creating the issue, drag and drop both zip files into the issue body or the first comment
-      value: |
-        Please attach both files:
-        - epic-logs-<run_id>.zip
-        - epic-runtime-<run_id>.zip
-
-        If you did not attach both files yet, please upload them before submitting the issue.
-    validations:
-      required: true
-
-  - type: textarea
     id: extra
     attributes:
       label: Extra context
-      description: Optional. Add screenshots, suspected cause, or anything else useful.
+      description: Optional. Add screenshots, suspected cause, environment details, or anything else useful. If this is a private fork, explicitly state which artifact zip files you uploaded.

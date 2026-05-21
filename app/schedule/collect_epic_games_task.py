@@ -10,14 +10,12 @@ import sys
 from contextlib import suppress
 from typing import List
 
-from browserforge.fingerprints import Screen
-from camoufox import AsyncCamoufox
 from playwright.async_api import Page
-from playwright.async_api import ViewportSize
 
 from services.epic_authorization_service import EpicAuthorization
+from services.browser_context import open_browser_context
 from services.epic_games_service import EpicAgent
-from settings import LOG_DIR, RECORD_DIR, settings
+from settings import LOG_DIR
 from utils import init_log
 from extensions.ext_celery import ext_celery_app
 
@@ -69,23 +67,17 @@ async def authorize(page: Page):
     await agent.invoke()
 
 
-@ext_celery_app.task(queue="epic-awesome-gamer")
+@ext_celery_app.task(queue="epic-freebies-helper")
 async def collect_epic_games_task():
     headless = "virtual" if "linux" in sys.platform else False
 
-    async with AsyncCamoufox(
-        persistent_context=True,
-        user_data_dir=settings.user_data_dir,
-        screen=Screen(max_width=1920, max_height=1080, min_height=1080, min_width=1920),
-        record_video_dir=RECORD_DIR,
-        record_video_size=ViewportSize(width=1920, height=1080),
-        humanize=0.2,
-        headless=headless,
-    ) as browser:
+    async with open_browser_context(headless=headless) as browser:
         page = browser.pages[0] if browser.pages else await browser.new_page()
 
         agent = EpicAuthorization(page)
-        await agent.invoke()
+        is_authenticated = await agent.invoke()
+        if not is_authenticated:
+            raise RuntimeError("Authentication failed, aborting this run")
 
         game_page = await browser.new_page()
         agent = EpicAgent(game_page)
