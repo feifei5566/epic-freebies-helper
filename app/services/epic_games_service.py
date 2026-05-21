@@ -965,10 +965,6 @@ class EpicGames:
         elapsed = 0
 
         while elapsed < timeout_ms:
-            if await self._is_checkout_security_check_visible(page):
-                logger.debug(f"Checkout readiness interrupted by security check. {url=}")
-                return None
-
             try:
                 payload = await self._active_purchase_container(
                     page, place_order_timeout=500, confirm_timeout=500
@@ -1006,12 +1002,12 @@ class EpicGames:
             if await self._is_claimed_state(page, url):
                 return "claimed", None
 
-            if await self._is_checkout_security_check_visible(page):
-                return "security", None
-
             payload = await self._wait_for_checkout_ready(page, url, timeout_ms=1000)
             if payload is not None:
                 return "checkout", payload
+
+            if await self._is_checkout_security_check_visible(page):
+                return "security", None
 
             await page.wait_for_timeout(500)
             elapsed += 1500
@@ -1027,7 +1023,6 @@ class EpicGames:
             "PLEASE DRAG THE ICON ON THE LEFT TO THE PLACE WHERE IT FITS",
             "VERIFY THAT YOU ARE HUMAN",
             "VERIFY YOU ARE HUMAN",
-            "PLEASE TRY AGAIN",
         ]
         purchase_frame_markers = [*page_markers, "I AM HUMAN", "SKIP"]
 
@@ -1053,19 +1048,7 @@ class EpicGames:
             return True
 
         purchase_frame_text = await EpicGames._purchase_frame_text(page)
-        if any(marker in purchase_frame_text for marker in purchase_frame_markers):
-            return True
-
-        for frame_text in await EpicGames._frame_texts(page, timeout=300):
-            normalized = " ".join(frame_text.upper().split())
-            if any(marker in normalized for marker in page_markers):
-                return True
-            if "I AM HUMAN" in normalized or (
-                "PLEASE TRY AGAIN" in normalized and "VERIFY" in normalized
-            ):
-                return True
-
-        return False
+        return any(marker in purchase_frame_text for marker in purchase_frame_markers)
 
     async def _resolve_checkout_security_check(
         self, page: Page, agent: AgentV, url: str, max_wait_ms: int = 600000
