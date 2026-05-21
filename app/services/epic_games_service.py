@@ -674,6 +674,8 @@ class EpicGames:
 
         checkout_markers = (
             ("CHECKOUT", "PLACE ORDER"),
+            ("CHECKOUT", "ADD TO LIBRARY"),
+            ("THIS IS FREE", "ADD TO LIBRARY"),
             ("REVIEW AND PLACE ORDER", "ORDER SUMMARY"),
             ("VERIFY YOUR INFORMATION", "ORDER SUMMARY"),
         )
@@ -855,16 +857,20 @@ class EpicGames:
         logger.debug("Scanning for purchase iframe...")
         wpc = page.frame_locator(PURCHASE_IFRAME_SELECTOR).first
 
-        logger.debug("Looking for 'PLACE ORDER' button...")
-        place_order_btn = wpc.locator("button", has_text="PLACE ORDER")
+        logger.debug("Looking for checkout submit button...")
+        submit_buttons = (
+            ("PLACE ORDER", wpc.locator("button", has_text="PLACE ORDER")),
+            ("ADD TO LIBRARY", wpc.locator("button", has_text="ADD TO LIBRARY")),
+        )
         confirm_btn = wpc.locator("//button[contains(@class, 'payment-confirm__btn')]")
 
-        try:
-            await expect(place_order_btn).to_be_visible(timeout=place_order_timeout)
-            logger.debug("✅ Found 'PLACE ORDER' button via text match")
-            return wpc, place_order_btn
-        except AssertionError:
-            pass
+        for label, submit_btn in submit_buttons:
+            try:
+                await expect(submit_btn).to_be_visible(timeout=place_order_timeout)
+                logger.debug("✅ Found '{}' button via text match", label)
+                return wpc, submit_btn
+            except AssertionError:
+                pass
 
         try:
             await expect(confirm_btn).to_be_visible(timeout=confirm_timeout)
@@ -884,17 +890,23 @@ class EpicGames:
                 if not EpicGames._looks_like_checkout_frame(body_text):
                     continue
 
-                place_order_btn = container.locator("button", has_text="PLACE ORDER")
+                submit_buttons = (
+                    ("PLACE ORDER", container.locator("button", has_text="PLACE ORDER")),
+                    ("ADD TO LIBRARY", container.locator("button", has_text="ADD TO LIBRARY")),
+                )
                 confirm_btn = container.locator(
                     "//button[contains(@class, 'payment-confirm__btn')]"
                 )
 
-                try:
-                    await expect(place_order_btn).to_be_visible(timeout=place_order_timeout)
-                    logger.debug("✅ Found 'PLACE ORDER' button by scanning checkout containers")
-                    return container, place_order_btn
-                except AssertionError:
-                    pass
+                for label, submit_btn in submit_buttons:
+                    try:
+                        await expect(submit_btn).to_be_visible(timeout=place_order_timeout)
+                        logger.debug(
+                            "✅ Found '{}' button by scanning checkout containers", label
+                        )
+                        return container, submit_btn
+                    except AssertionError:
+                        pass
 
                 try:
                     await expect(confirm_btn).to_be_visible(timeout=confirm_timeout)
@@ -904,7 +916,7 @@ class EpicGames:
                     pass
 
         logger.warning("Primary buttons not found in checkout containers.")
-        raise AssertionError("Could not find Place Order button in checkout containers")
+        raise AssertionError("Could not find checkout submit button in checkout containers")
 
     @staticmethod
     async def _uk_confirm_order(wpc: PurchaseContainer):
@@ -1015,6 +1027,7 @@ class EpicGames:
             "PLEASE DRAG THE ICON ON THE LEFT TO THE PLACE WHERE IT FITS",
             "VERIFY THAT YOU ARE HUMAN",
             "VERIFY YOU ARE HUMAN",
+            "PLEASE TRY AGAIN",
         ]
         purchase_frame_markers = [*page_markers, "I AM HUMAN", "SKIP"]
 
@@ -1040,7 +1053,19 @@ class EpicGames:
             return True
 
         purchase_frame_text = await EpicGames._purchase_frame_text(page)
-        return any(marker in purchase_frame_text for marker in purchase_frame_markers)
+        if any(marker in purchase_frame_text for marker in purchase_frame_markers):
+            return True
+
+        for frame_text in await EpicGames._frame_texts(page, timeout=300):
+            normalized = " ".join(frame_text.upper().split())
+            if any(marker in normalized for marker in page_markers):
+                return True
+            if "I AM HUMAN" in normalized or (
+                "PLEASE TRY AGAIN" in normalized and "VERIFY" in normalized
+            ):
+                return True
+
+        return False
 
     async def _resolve_checkout_security_check(
         self, page: Page, agent: AgentV, url: str, max_wait_ms: int = 600000
