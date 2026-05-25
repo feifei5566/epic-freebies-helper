@@ -619,3 +619,21 @@
   - 优化 `_frame_texts()`：在遍历子 frame 时，增加对 iframe 元素本身可见性（`frame_element.is_visible()`）的检查。如果是隐藏的 frame 则直接跳过，以此根本性地解决隐藏验证码容器的干扰。
   - 修复 `_is_checkout_security_check_visible()`：重新补回 `_frame_texts()` 的文字扫描检测。配合已经过滤为「仅限可见 frame」的 `_frame_texts` 逻辑，能安全且百分之百精准地在真正弹出验证码时触发 hCaptcha 破解程序，而不会造成误判。
 
+### 新增登录状态 Fallback 双重判定，解决 Epic 新路由下 egs-navigation 侦测超时问题
+
+- 现象：
+  - 在登录成功后，新开的领取页面（game_page）在跳转时发生 `RuntimeError: Could not determine Epic login state because //egs-navigation did not appear.` 错误。
+- 根因判断：
+  - 最近 Epic Games 商城前端改版，将原本的 URL 结构重定向到了无语系前缀的全新 URL（例如 `https://store.epicgames.com/free-games?lang=en-US`）。
+  - 在这个新版商城路由下，原有的 `//egs-navigation` 导航栏元素可能会因为网络载入缓慢或 DOM 结构改变而无法在极短的 1.5 秒超时内被 Playwright 顺利定位，进而导致大循环超时崩溃。
+- 改动文件：
+  - `app/services/epic_games_service.py`
+  - `app/services/epic_authorization_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 在 `epic_games_service.py` 与 `epic_authorization_service.py` 的 `_get_login_status` 侦测中，新增双重 Fallback 策略：
+    - **Fallback 1**：当 `//egs-navigation` 找不到时，主动寻找页面上可见的 `"Sign In"` / `"Sign in"` 链接。若存在则精准判定为未登录（返回 `"false"`）。
+    - **Fallback 2**：若无登录链接，则直接通过 Playwright 读取 `context.cookies()`。若 cookies 中含有 sso/bearer/session 凭证，则判定为已登录（返回 `"true"`）。
+  - 这双重防线能从根本上摆脱 Epic 导航栏改版及网络抖动的影响，提供极高稳健性的 session 检测。
+
+

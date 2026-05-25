@@ -243,6 +243,33 @@ class EpicAuthorization:
                 "Timed out while waiting for //egs-navigation during auth check | current_url='{}'",
                 self.page.url,
             )
+
+            # 🟢 Fallback 策略 1：尋找可見的 "Sign In" 按鈕/連結
+            try:
+                sign_in_locator = self.page.locator(
+                    "//a[contains(@href, 'login') or contains(., 'Sign In') or contains(., 'Sign in')]"
+                ).first
+                if await sign_in_locator.is_visible(timeout=1000):
+                    logger.debug("Fallback login check: Found visible Sign In button, returning false")
+                    return "false"
+            except Exception as e:
+                logger.debug(f"Fallback login check (Sign In locator) failed: {e}")
+
+            # 🟢 Fallback 策略 2：檢查 SSO/Session cookies 存在性
+            try:
+                cookies = await self.page.context.cookies()
+                has_session = any(
+                    "sso" in c["name"].lower()
+                    or "bearer" in c["name"].lower()
+                    or "session" in c["name"].lower()
+                    for c in cookies
+                )
+                if has_session:
+                    logger.debug("Fallback login check: Found SSO/session cookies, returning true")
+                    return "true"
+            except Exception as e:
+                logger.debug(f"Fallback login check (Cookies check) failed: {e}")
+
             return None
 
     async def _ensure_store_session_ready(self, timeout_seconds: int = 45) -> None:
