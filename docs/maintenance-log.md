@@ -602,3 +602,20 @@
   - `Continue` 点击兜底新增面向 dialog/modal/overlay 容器的浏览器端扫描：优先点击容器内最后一个可见的 `Continue` 按钮，抓不到时再退化成容器内最后一个可见按钮。
   - `_click_purchase_button()` 在所有点击策略都无进展后，会先做一次强复查并再次尝试清理设备弹窗，再决定是否落成 `click_no_effect`。
   - `_log_purchase_button_context()` 改成短超时采样和受控降级，不再让调试信息读取本身触发 30 秒硬超时。
+
+## 2026-05-25
+
+### 优化验证码侦测逻辑，解决 checkout 时 hCaptcha 侦测失效问题
+
+- 现象：
+  - 专案在执行 Epic Games 领取 workflow 时失败，特别是在 checkout 阶段遇到安全验证（hCaptcha）时，程式卡在 checkout 画面而无法触发 AI 验证码破解，最后因为 timeout 导致整轮 workflow 执行失败。
+- 根因判断：
+  - 之前的改动中，为了避免 Epic Games 页面上隐藏（invisible）的 hCaptcha 容器 frame 误导侦测流程，而将 `_is_checkout_security_check_visible` 内部透过 `_frame_texts()` 遍历所有子 frame 内容的逻辑完全拔除。
+  - 这导致在 checkout 时若真的弹出了需要破解的 hCaptcha，但它的 size、src 或 title 未能完美配对到预设的 `visible_locators` 或 `_visible_hcaptcha_frame_urls` 规则，程式就完全侦测不到验证码的存在，亦不会触发 AI solver，造成卡死。
+- 改动文件：
+  - `app/services/epic_games_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 优化 `_frame_texts()`：在遍历子 frame 时，增加对 iframe 元素本身可见性（`frame_element.is_visible()`）的检查。如果是隐藏的 frame 则直接跳过，以此根本性地解决隐藏验证码容器的干扰。
+  - 修复 `_is_checkout_security_check_visible()`：重新补回 `_frame_texts()` 的文字扫描检测。配合已经过滤为「仅限可见 frame」的 `_frame_texts` 逻辑，能安全且百分之百精准地在真正弹出验证码时触发 hCaptcha 破解程序，而不会造成误判。
+

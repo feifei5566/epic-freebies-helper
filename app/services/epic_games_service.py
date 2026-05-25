@@ -265,6 +265,10 @@ class EpicGames:
         options = {} if timeout is None else {"timeout": timeout}
         for frame in page.frames:
             with suppress(Exception):
+                if frame != page.main_frame:
+                    frame_element = await frame.frame_element()
+                    if frame_element and not await frame_element.is_visible():
+                        continue
                 body = frame.locator("body")
                 text = await body.inner_text(**options)
                 if text:
@@ -1048,7 +1052,19 @@ class EpicGames:
             return True
 
         purchase_frame_text = await EpicGames._purchase_frame_text(page)
-        return any(marker in purchase_frame_text for marker in purchase_frame_markers)
+        if any(marker in purchase_frame_text for marker in purchase_frame_markers):
+            return True
+
+        for frame_text in await EpicGames._frame_texts(page, timeout=300):
+            normalized = " ".join(frame_text.upper().split())
+            if any(marker in normalized for marker in page_markers):
+                return True
+            if "I AM HUMAN" in normalized or (
+                "PLEASE TRY AGAIN" in normalized and "VERIFY" in normalized
+            ):
+                return True
+
+        return False
 
     async def _resolve_checkout_security_check(
         self, page: Page, agent: AgentV, url: str, max_wait_ms: int = 600000
