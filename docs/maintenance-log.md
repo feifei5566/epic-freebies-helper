@@ -251,6 +251,23 @@
   - 将“为什么默认按周跑”“如何自己改 cron”写入中英文 GitHub Actions 文档。
   - 在中英文 README 的功能概览中同步说明默认是每周四运行一次，并支持自行调整。
 
+### Checkout 安全校验解完后仍停在 Add to library，最终被误判失败
+
+- 现象：
+  - 某些免费游戏在 checkout 中完成一轮或多轮 hCaptcha 后，并不会立刻跳到“Thanks for your order / In Library”这类明确成功态。
+  - 页面可能仍停留在商品页上的 checkout 弹层，继续显示 `Add to library`，最后主流程以 `Instant checkout ended without a confirmed claim state` 收尾，并在最终 reconciliation 后抛出失败。
+- 根因判断：
+  - 旧的最终确认逻辑对这类“checkout 还活着，但尚未被动变成 claimed state”的情况过于保守。
+  - `final reconciliation` 主要做页面状态检查和订单历史检查，没有在发现 checkout/security 仍然存在时主动把领取流程接着跑完。
+  - 同时 reconciliation 首轮不强制重开商品页，容易继续沿用已经过期的 checkout 弹层 DOM。
+- 改动文件：
+  - `app/services/epic_games_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - `final reconciliation` 现在每轮都会重开商品页，并在发现 `checkout` 或 `security` 仍然活跃时，主动恢复即时结账流程，而不是只做被动确认。
+  - `_handle_instant_checkout()` 增加内部恢复模式，允许 reconciliation 复用即时结账逻辑，但避免递归触发自己的 finalize 分支。
+  - 将 unconfirmed checkout 的最终确认次数和等待窗口拉长，提升 Epic 后端状态回写较慢时的恢复能力。
+
 ### Device not supported 弹窗再次导致领取失败
 
 - 现象：
@@ -451,6 +468,7 @@
   - `README.en.md`
   - `.github/workflows/README.md`
   - `.github/workflows/README.en.md`
+  - `docker/docker-compose.yaml`
   - `docs/maintenance-log.md`
 - 处理结果：
   - 在中英文 README 和 workflow 文档中补充一句直白说明。
@@ -635,5 +653,345 @@
     - **Fallback 1**：当 `//egs-navigation` 找不到时，主动寻找页面上可见的 `"Sign In"` / `"Sign in"` 链接。若存在则精准判定为未登录（返回 `"false"`）。
     - **Fallback 2**：若无登录链接，则直接通过 Playwright 读取 `context.cookies()`。若 cookies 中含有 sso/bearer/session 凭证，则判定为已登录（返回 `"true"`）。
   - 这双重防线能从根本上摆脱 Epic 导航栏改版及网络抖动的影响，提供极高稳健性的 session 检测。
+
+### 2026-06-08 登录后 MFA 推荐页、启动后端与 GLM 拖拽格式加固
+
+- 现象：
+  - 社区反馈中登录验证码已经通过，但登录后页面可能停在 `/id/login/mfa/add/default`，后续领取阶段最终报 `Failed to confirm claim flow for promotions`。
+  - 本地真实运行时，`browserforge` 的 `fingerprint-network.zip` 下载中断会让 `browser_context` 在 import 阶段直接失败，导致 `BROWSER_BACKEND=playwright` 也无法绕过 Camoufox 初始化问题。
+  - Camoufox 本地真实运行中还出现过 `NS_ERROR_UNKNOWN_HOST` 这类浏览器内 DNS 导航错误，旧领取页入口只重试 Playwright timeout。
+  - 本地真实运行还发现 GLM 可能返回 `source_coordinates` / `target_coordinates` 拖拽坐标，旧归一化逻辑会让 `ImageDragDropChallenge` 缺少 `paths`。
+- 根因判断：
+  - `/id/login/mfa/add/default` 是 Epic 登录后的 MFA 设置推荐中间页，不等同于领取失败；代码此前只显式处理隐私政策页和强制 2FA 错误，没有统一识别和跳过 MFA 推荐页。
+  - Camoufox、`browserforge` 的重型依赖在模块加载时导入，削弱了 `auto` / `playwright` fallback 的意义。
+  - GLM 兼容层的拖拽坐标别名覆盖还不完整。
+- 改动文件：
+  - `app/services/browser_context.py`
+  - `app/services/epic_authorization_service.py`
+  - `app/services/epic_games_service.py`
+  - `app/extensions/llm_adapter.py`
+  - `tests/test_glm_adapter.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - Camoufox 和 `browserforge.fingerprints.Screen` 改为按后端懒加载，避免 Playwright fallback 被 Camoufox 指纹数据下载失败提前拖死。
+  - 周免页登录态入口的导航重试同时覆盖 Playwright timeout 和通用导航错误，降低临时 DNS / 网络错误直接终止运行的概率。
+  - 认证流程新增 `/id/login/mfa/add` 检测与跳过逻辑；若无法自动跳过，会明确提示用户手动跳过或完成 MFA 推荐页，不再把它收口成模糊领取失败。
+  - 领取页登录态检查也会识别 MFA 推荐页，避免新开页面被重定向后继续进入商品领取逻辑。
+  - GLM 拖拽归一化新增 `source_coordinates` / `target_coordinates` 别名，并追加回归测试。
+  - 本地验证：`py_compile` 通过；`PYTHONPATH=app pytest tests/test_glm_adapter.py -q` 通过。真实本地领取未能跑到领取阶段：Playwright 后端连续触发 hCaptcha 失败；Camoufox 已能安装并启动，但本机 Camoufox 内访问 Epic 出现 `NS_ERROR_UNKNOWN_HOST`。
+
+### 2026-06-09 Epic 新结账页 Add to Library 与 GLM 结账验证码修复
+
+- 现象：
+  - 本地真实运行中，登录和初始 `Get` 点击已经正常，但商品页点击后最终报 `Failed to confirm claim flow for promotions`。
+  - 调试快照显示点击后实际已经打开 Epic 结账 iframe，文案为 `THIS IS FREE` / `ADD TO LIBRARY`，旧逻辑只识别 `PLACE ORDER`，因此误判为点击无效。
+  - 结账 hCaptcha 中，GLM 会返回 `image_label_single_select`、裸 `x,y` 点坐标、`source_coordinates` / `target_coordinates` 或局部/网格坐标混用，旧兼容层会触发 schema 校验失败或坐标偏移。
+  - 结账验证码通过后，Epic 会重建 checkout DOM，旧 `_submit_place_order()` 继续使用失效的按钮 locator，导致后续点击策略各自等待到超时。
+- 根因判断：
+  - Epic 免费领取页已从旧 `PLACE ORDER` 流程变成部分商品使用 `ADD TO LIBRARY` 的即时结账流程，状态机的 checkout marker 和提交按钮候选不完整。
+  - GLM OpenAI 兼容响应格式比 Gemini 更松散，需要对当前 hCaptcha 的路由枚举、裸坐标和图片坐标提示做额外归一化。
+  - 结账验证码通过后 checkout iframe/按钮可能被替换，提交阶段必须重新扫描当前按钮，不能复用验证码前的 locator。
+  - 机械拖拽轨迹会降低 drag 类结账验证码通过率，应默认使用 Bezier 轨迹。
+- 改动文件：
+  - `app/services/epic_games_service.py`
+  - `app/extensions/llm_adapter.py`
+  - `app/deploy.py`
+  - `app/settings.py`
+  - `docker/docker-compose.yaml`
+  - `docker/.env`
+  - `tests/test_glm_adapter.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - checkout 识别新增 `ADD TO LIBRARY` / `THIS IS FREE` / `ADD IT TO YOUR LIBRARY` marker，并把 `ADD TO LIBRARY` 当作可提交按钮。
+  - 结账验证码识别新增 `PLEASE TRY AGAIN` + `VERIFY` 组合，避免验证码 iframe 被误判为普通 checkout。
+  - `_submit_place_order()` 每个点击策略前都会重新扫描当前 checkout 按钮，并给 dispatch/dom 点击加短超时，避免 DOM 重建后卡住旧 locator。
+  - GLM 图片请求改为标准 data URL；图片坐标任务追加网格坐标提示；兼容 `image_label_single_select`、当前 hCaptcha `image_drag_multi` 枚举、裸 `x,y` 点坐标和更多拖拽坐标别名。
+  - `HEADLESS=false` 可用于本地可视化排查；默认和 Docker 配置改为启用 Bezier 轨迹。
+  - 本地验证：`py_compile` 通过；`PYTHONPATH=app pytest tests/test_glm_adapter.py -q` 通过，7 个用例通过。
+  - 真实本地领取验证成功：`Rogue Waters` 已显示 `In Library`；`Songs of Conquest` 通过结账 hCaptcha 后确认 `IN LIBRARY`；最终日志为 `Browser tasks execution finished successfully` / `Scheduler is disabled, deployment completed`。
+
+### 2026-06-09 GitHub Actions 同入口完整领取收口复测
+
+- 现象：
+  - 需要确认修复不只是本地已登录账号成功，还要覆盖 GitHub Actions 使用的 `uv run app/deploy.py` 主入口完整收口。
+  - 第二个 Epic 账号首次运行会经历完整登录、登录 hCaptcha、MFA 推荐页跳过、商店稳态验证、两个商品即时结账和结账 hCaptcha。
+- 根因判断：
+  - GitHub Actions 与本地测试共用 `app/deploy.py` 入口；如果 Actions 没有显式传入 Bezier 轨迹配置，虽然代码默认已修正，日志和 fork 配置仍不够直观。
+  - 完整收口必须覆盖“验证码后无可解 frame 但稍后出现 `IN LIBRARY`”和“验证码后按钮被 overlay 拦截但 force 点击继续推进”两条路径。
+- 改动文件：
+  - `.github/workflows/epic-gamer.yml`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - GitHub Actions 入口显式设置 `DISABLE_BEZIER_TRAJECTORY=false`，与本地成功配置一致。
+  - 使用 `ronchy2000@gmail.com` 账号按 Actions 同入口配置真实复测成功：登录 hCaptcha 通过，MFA 推荐页自动跳过，`Epic store session verification success` 后进入领取。
+  - `Rogue Waters` 通过 `ADD TO LIBRARY` 即时结账后确认 `IN LIBRARY`。
+  - `Songs of Conquest` 结账 hCaptcha 首轮失败后重试成功，验证码后标准点击被 overlay 拦截，但 force 点击推进并最终确认 `IN LIBRARY`。
+  - 最终日志为 `Confirmed 2 instant claim(s)`、`Browser tasks execution finished successfully`、`Scheduler is disabled, deployment completed`，进程退出码为 0。
+
+### 2026-06-12 Camoufox 清理阶段双重关闭导致 GitHub Actions 假失败
+
+- 现象：
+  - 某些 GitHub Actions 日志里，登录、MFA 推荐页跳过、商店会话验证、甚至商品发现都已经正常完成。
+  - 但 run 最终不是死在领取状态机里，而是在退出浏览器上下文时抛出 `BrowserContext.close: Connection closed while reading from the driver`，随后整轮以 exit code 1 结束。
+  - 日志尾部还伴随多条 `Target page, context or browser has been closed` 的 future 异常。
+- 根因判断：
+  - `execute_browser_tasks()` 在 `async with open_browser_context(...)` 内部手动调用了 `await browser.close()`。
+  - 同时 `open_browser_context()` 自己也负责在退出时关闭 Camoufox / Playwright 持久化 context。
+  - 在 GitHub runner 上，一旦 Camoufox 驱动已先断开，第二次关闭会把原本应当成功或至少更准确的主异常覆盖成收尾阶段异常，造成“假失败”。
+- 改动文件：
+  - `app/deploy.py`
+  - `app/services/browser_context.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 浏览器关闭职责统一收回 `open_browser_context()`，移除了 `execute_browser_tasks()` 内部的重复 `browser.close()`。
+  - Camoufox 分支改为手动托管 `__aenter__` / `__aexit__`，并在退出时抑制关闭阶段异常，避免驱动已断开时把 run 改写成失败。
+  - 这样即使浏览器进程先一步结束，GitHub Actions 也不会因为清理阶段双重关闭而额外翻成 exit code 1。
+
+### 2026-06-16 Epic Store 导航组件缺失导致 Actions 登录态误判
+
+- 现象：
+  - 多个用户的 GitHub Actions 日志显示登录 hCaptcha、MFA 推荐页跳过、账号校验和商店会话验证已经完成。
+  - 进入领取前检查时，页面停在 `https://store.epicgames.com/free-games?lang=en-US`，但 `//egs-navigation` 长时间没有出现，最终报 `Could not determine Epic login state because //egs-navigation did not appear`。
+  - 另一些日志在认证后的商店稳态检查阶段反复输出 `Timed out while waiting for //egs-navigation during auth check`，说明同一依赖点在 Actions 环境下不稳定。
+- 根因判断：
+  - Epic Store 的导航 Web Component 在 GitHub Actions / Camoufox 环境中可能延迟、失败或被部分加载卡住。
+  - 旧逻辑把 `egs-navigation[isloggedin]` 作为唯一登录态来源；即使账号接口已经可访问，也会因为前端导航壳层缺失而终止任务。
+  - 这不是 `Device not supported` 或 `ADD TO LIBRARY` 结账状态机回退，而是领取前的会话探针过窄。
+- 改动文件：
+  - `app/services/epic_authorization_service.py`
+  - `app/services/epic_games_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 认证后的商店稳态检查和领取前登录态检查保留 `egs-navigation` 快路径。
+  - 如果 8 秒内仍拿不到导航登录态，会访问 Epic 账号订单接口 `ajaxGetOrderHistory` 做后备会话探针。
+  - 只有后备接口返回合法 JSON 且包含 `orders` 列表时才视为已登录；未登录、重定向、页面错误或非 JSON 响应仍会继续失败，不会把匿名页面误判成有效会话。
+  - 领取前订单同步复用同一订单接口解析逻辑，并保留已有 `Device not supported`、`ADD TO LIBRARY`、结账 hCaptcha 和订单历史最终确认逻辑。
+
+### 2026-07-06 收紧即时结账确认链并修复多游戏连续领取的第二单易失败问题
+
+- 现象：
+  - 有些账号实际已经把周免领进库里，GitHub Actions 最终却仍以 `Failed to confirm claim flow for promotions` 退出。
+  - 另一类高频反馈是：同一轮两个周免里，第一个能成功，第二个更容易卡在 checkout 安全校验、`Place Order` / `Add to library` 后无收口，最终误报失败。
+- 根因判断：
+  - 旧的即时结账收尾只做了偏短的一次性确认，遇到 Epic 商品页状态回写或订单历史同步稍慢时，容易把“已完成但未及时显现”的 case 判成失败。
+  - `Place Order` / `Add to library` 的提交逻辑在第一次 click 调用不抛异常时就直接返回，即使按钮、overlay 和页面状态完全没变化，也不会继续尝试后续提交策略。
+  - 连续领取多个游戏时，第二个商品更容易遇到更重的 checkout 风控；同时旧逻辑固定偏向首个 purchase iframe，遇到遗留或非活动 iframe 时更容易点到错误容器。
+- 改动文件：
+  - `app/services/epic_games_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - checkout 容器扫描改为优先遍历当前页面上更像活动 checkout 的 frame / page 容器，不再固定依赖首个 purchase iframe。
+  - `Place Order` / `Add to library` 提交改为只有在按钮消失、进入 claimed、安全校验出现或按钮/overlay 状态发生变化时才算本次 click 真正生效；否则继续尝试后续提交策略。
+  - 即时结账末尾增加 promotion 级 reconciliation：可回到商品页重新确认，并额外轮询订单历史，降低“实际已领到但最后没收好”的误报率。
+  - `collect_weekly_games()` 会在真正抛错前，再对所有未确认 promotion 统一执行一轮最终 reconciliation，尽量把第二单的延迟成功补收回来。
+  - 本地验证限制：未执行测试；已执行 `python3 -m py_compile app/services/epic_games_service.py` 与 `git diff --check` 做静态校验。
+
+### 2026-07-10 更新 BrowserForge 运行时数据依赖
+
+- 现象：
+  - 部分 fork 的 GitHub Actions 在进入 Epic 登录前就失败。
+  - 日志显示 `camoufox` 导入 `browserforge` 时尝试读取 `browserforge/headers/data/headers-order.json`，但当前锁定的 `browserforge 1.2.3` wheel 中没有该运行时数据文件。
+- 根因判断：
+  - `uv.lock` 仍锁定 `browserforge 1.2.3`。
+  - `browserforge 1.2.4` 已将模型 / 指纹数据改为通过 `apify-fingerprint-datapoints` 依赖提供，不再依赖旧的包内 `headers-order.json` 路径。
+- 改动文件：
+  - `pyproject.toml`
+  - `uv.lock`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 在项目依赖中显式增加 `browserforge>=1.2.4`，避免后续重新锁定到缺少运行时数据文件的版本。
+  - 刷新 `uv.lock`，将 `browserforge` 从 `1.2.3` 更新到 `1.2.4`，并锁定新增的 `apify-fingerprint-datapoints` 传递依赖。
+  - 本地验证：`from browserforge.headers import HeaderGenerator`、`from browserforge.fingerprints import FingerprintGenerator`、`from camoufox import AsyncCamoufox` 均可正常导入。
+
+### 2026-07-17 GLM 复杂验证码多路径丢失并导致 Epic 登录失败
+
+- 现象：
+  - 同一提交在维护者账号上可以完成登录和领取，但部分 Fork 会在 Epic 登录 hCaptcha 阶段连续失败，三轮认证后以 `Authentication failed, aborting this run` 退出。
+  - 失败日志包含 `ImageDragDropChallenge` 的 `challenge_prompt` / `paths` 缺失校验错误；模型实际返回过 `answer` 四元坐标列表和 `src` 点对。
+  - 失败账号主要收到 `image_drag_multi`、多目标点选和补全线段题；成功账号只收到相对简单的 `image_drag_single`。`/checkcaptcha/` 空响应在成功任务中也会出现，因此不是决定性根因。
+- 根因判断：
+  - GLM 兼容层只稳定归一化单条拖动路径，不能按 `ImageDragDropChallenge` schema 保留 `answer=[[sx,sy,tx,ty], ...]` 中的全部路径，也不兼容 `src` / `dst` 点对。
+  - 模型即使识别了多个可移动部件，结构校验重试也可能把结果收缩成单条合法路径，导致复杂拖动题只执行第一步并被 hCaptcha 拒绝。
+  - 验证码 frame 消失但页面退回已填写的密码表单时，登录逻辑不会重新提交 `Sign in`，会空等登录结果后重建整轮认证。
+  - GitHub Actions 把模型名与 API Key 一起配置为 Secrets，导致有效的 `SPATIAL_PATH_REASONER_MODEL` 在诊断日志中被自动遮罩。
+- 改动文件：
+  - `app/extensions/llm_adapter.py`
+  - `app/services/epic_authorization_service.py`
+  - `app/settings.py`
+  - `app/deploy.py`
+  - `.github/workflows/epic-gamer.yml`
+  - `tests/test_glm_adapter.py`
+  - `README.md`
+  - `README.en.md`
+  - `.github/workflows/README.md`
+  - `.github/workflows/README.en.md`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 拖动题按目标 schema 归一化，兼容标准 `paths`、四元坐标列表、点对、`answer`、`src` / `dst` 等返回形式，并按原顺序保留全部拖动路径。
+  - GLM 视觉提示增加复杂拖动和多目标点选约束：先统计全部可移动部件；补全线段题按编号端点、形状、颜色和方向匹配；每个动作必须输出独立 `paths` 项。
+  - 登录验证码消失但仍停留密码表单时，会在现有三次 solve 预算内重新提交登录，不增加认证总轮数，也不改变领取复核或 GitHub Actions 30 分钟限制。
+  - 默认 GLM 模型与文档统一为 `glm-4.6v`。工作流对 provider 和模型名改为 GitHub Variables 优先、同名 Secrets 兼容回退，并增加有效模型路由日志。模型名迁移到 Variables 后，`SPATIAL_PATH_REASONER_MODEL` 可直接显示；仍放在 Secrets 时继续遵守 GitHub 自动遮罩。
+  - 增加多路径四元坐标、分号分隔路径和 `src` 点对回归用例。按仓库规则未执行测试；已通过 Black、Ruff、`py_compile` 和 `git diff --check` 静态验证。
+
+### 2026-07-17 Actions 复杂验证码别名校验失败与密码表单恢复异常
+
+- 现象：
+  - Fork 运行 `29562510108` 使用上一轮修复提交后仍在登录阶段失败；日志证明模型路由和 GLM 补丁已经生效，并且 `image_drag_multi` 已能输出两条路径。
+  - 同一运行中 GLM 还返回了 `src` + `tgt`、`src` + `dest` 和 `answer="840,322|640,470"` 等变体，这些响应在执行拖动前被 `ImageDragDropChallenge.paths` 必填校验拒绝。
+  - hCaptcha 消失后页面实际回到了已填写密码的 `Enter your password` 表单，但恢复逻辑报 `Frame.is_visible() got an unexpected keyword argument 'timeout'`，三轮认证都无法重新提交登录。
+  - 运行时产物路径只有 `app/volumes/runtime/`，而 hCaptcha 挑战原图位于隐藏目录 `app/volumes/hcaptcha/.challenge/`，失败后只能看到密码页截图，无法复核模型对复杂题型的视觉配对。
+- 根因判断：
+  - GLM 返回格式仍存在未覆盖的目标字段别名和坐标分隔符；归一化在 Pydantic 响应模型校验前没有把这些真实返回统一成 `paths`。
+  - Camoufox 使用的 Playwright 兼容层不接受当前 `is_visible(timeout=...)` 调用路径，密码表单恢复分支因此在点击 `Sign in` 之前异常退出。
+  - 复杂拖动提示虽然要求保留多路径，但没有明确强调按题目数量、实心可移动图形与空心轮廓、完整形状和方向逐一配对，模型仍可能按同一行等弱特征选择目标。
+- 改动文件：
+  - `app/extensions/llm_adapter.py`
+  - `app/services/epic_authorization_service.py`
+  - `.github/workflows/epic-gamer.yml`
+  - `tests/test_glm_adapter.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 拖动坐标归一化新增 `src` 对 `tgt` / `dest` / `destination` 等目标别名，并支持 `x,y|x,y`、箭头和冒号分隔的单路径答案；这些变体会在 Pydantic 校验前转换为标准 `start_point` / `end_point`。
+  - 复杂拖动提示要求路径数与题目显式数量一致，先区分实心可移动部件和空心目标轮廓，再按形状、颜色、尺寸和方向匹配，避免仅按行位置配对。
+  - 密码表单恢复改用 `Locator.wait_for(state="visible")`，避免不兼容的 `is_visible(timeout=...)`；重新提交后会先等待登录结果，只有新 hCaptcha 出现时才进入下一次 solve，保留原有三轮预算。
+  - `epic-runtime` 产物同时上传 `.challenge` 隐藏目录，后续失败运行可以直接复核挑战原图和模型缓存；领取多轮复核与 Actions 30 分钟限制均未修改。
+  - 按仓库规则未执行测试；提交前只执行格式化、Ruff、`py_compile`、workflow YAML 解析和 `git diff --check` 静态校验。
+
+### 2026-07-17 本地 Camoufox 端到端复测与编号线段题目标修正
+
+- 现象：
+  - 按用户要求使用本地真实 Epic 账号和 GLM `glm-4.6v` 复测时，普通 Playwright Firefox 能进入登录挑战，但 hCaptcha `/checkcaptcha/` 持续返回空响应并刷新题目。
+  - 保存的挑战原图显示，GLM 在线段补全题中把可移动编号 `4` 线段的目标中心选在了已有编号 `3` 端点上，没有推断整段线条在 `3` 与 `5` 之间的最终落位。
+  - 本机 Camoufox 启动器访问 GitHub Releases API 时触发 403 速率限制，无法自动获取浏览器二进制。
+- 根因判断：
+  - 普通 Playwright Firefox 的空校验响应属于本地浏览器环境差异，不能代表 GitHub Actions 默认使用的 Camoufox 路径。
+  - 现有提示要求匹配编号和方向，但没有明确区分“连接端点”与“整段平移后的中心目标坐标”，模型容易直接返回已有编号标记的位置。
+  - Camoufox 二进制可以从官方 release 资源直链下载，403 只发生在未认证 GitHub API 元数据请求。
+- 改动文件：
+  - `app/extensions/llm_adapter.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 编号线段题提示明确要求：编号 `N` 的可移动线段放入固定 `N-1` 与 `N+1` 之间，按两端连接关系推断整段最终位置；`end_point` 必须是最终落位后的线段中心，不能使用已有编号标记或端点坐标。
+  - 本机安装兼容版本 Camoufox 后，以 `BROWSER_BACKEND=camoufox` 完成真实端到端运行，程序确认 Epic 会话有效、查询到两款本周周免、通过订单历史确认均已入库，并正常清理浏览器和以 exit code 0 退出。
+  - 因该账号两款本周周免都已拥有，本次端到端运行按设计在订单预检阶段结束，无法重复触发真实 checkout 提交；登录、周免查询、订单核对和任务正常收口均已实测成功。
+
+### 2026-07-17 Actions 拖拽起点偏离实体导致登录验证码令牌无效
+
+- 现象：
+  - GitHub Actions 运行 `29565564269` 已加载复杂题型提示和多路径归一化修复，但登录 hCaptcha 仍在三轮认证后失败。
+  - 运行时产物显示模型能输出两条拖动路径，但起点坐标会落在可移动卡片的空白处；其中一条路径甚至给出挑战区域之外的 `y=623`。
+  - hCaptcha 曾返回一次页面级 `Challenge success`，Epic 登录接口随后仍明确返回 `captcha_invalid`。
+- 根因判断：
+  - `hcaptcha-challenger 0.19.0` 的挑战载荷已经在 `tasklist[].entities[].coords` 中提供可拖动物体中心点，但实际拖动流程完全没有使用这些坐标，而是把起点和目标点都交给视觉模型估算。
+  - GLM 对复杂图形的目标配对可以保留，但让模型同时估算右侧卡片中的起点会引入无必要的误差；起点落空后，目标推理正确也无法完成拖动。
+  - 编号线段题的目标落位仍不够稳定，继续提交这类题会显著增加无效令牌概率。
+- 改动文件：
+  - `app/extensions/hcaptcha_adapter.py`
+  - `app/settings.py`
+  - `tests/test_hcaptcha_adapter.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 新增 hCaptcha 拖动执行适配：视觉模型继续负责目标图形配对，执行前使用挑战载荷中的实体中心坐标修正每条路径的起点。
+  - 根据实际挑战截图自动识别 320px / 330px 两种任务画布原点，再映射到浏览器页面坐标；只有实体数与模型路径数完全一致时才覆盖，无法可靠识别时保留模型结果并记录告警。
+  - 起点和路径按纵向顺序配对，兼容双图形题中模型起点整体偏移或超出边界的情况，且不修改模型推断的目标点。
+  - 将当前仍不稳定的单线段补全题加入刷新列表，保留多轮探测、最终复核和 GitHub Actions 30 分钟强制终止逻辑不变。
+  - 使用失败运行上传的 19 组真实挑战截图、载荷和模型答案逐组回放，320px / 330px 画布均识别正确，所有修正后起点都位于挑战区域内；新增用例与 GLM 兼容用例合计 16 个通过。
+  - 使用全新 Camoufox 用户目录完成真实本地运行，邮箱密码登录、Epic 会话验证、周免查询、订单历史核对和浏览器清理全部成功，进程退出码为 0；本次登录未下发拖拽题，当前两款周免均已拥有，因此没有重复执行 checkout。
+
+### 2026-07-17 单线段题刷新循环与多轮验证码超时
+
+- 现象：
+  - GitHub Actions 运行 `29572502088` 确认加载提交 `481dbec` 和拖拽起点修复，但三次登录挑战仍失败。
+  - 多个 `image_drag_single` 从开始到 `Challenge execution timed out` 正好耗时 120 秒，期间没有模型调用或坐标修正日志。
+  - 部分双图形题已经修正起点，但 GLM 仍按上下行位置匹配轮廓；`/checkcaptcha/` 返回空响应时还会打印 JSON 解析堆栈并额外等待响应超时。
+- 根因判断：
+  - 单线段题被加入 `ignore_request_questions` 后，该账号持续收到同类题，递归刷新直到耗尽每轮 120 秒执行预算。
+  - 多六边形轮廓题本质是拓扑匹配，继续依赖视觉模型会引入按行猜测和几十秒推理延迟。
+  - hCaptcha 的空校验响应未被转换为明确失败信号，导致无效题目无法及时进入下一轮。
+- 改动文件：
+  - `app/extensions/hcaptcha_adapter.py`
+  - `app/extensions/llm_adapter.py`
+  - `app/services/epic_authorization_service.py`
+  - `app/settings.py`
+  - `tests/test_hcaptcha_adapter.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 撤销单线段题跳过策略，避免同类题无限刷新；线段题继续求解，并注入载荷中的真实起点及 3/5 号线段之间的几何走廊约束。
+  - 多图形轮廓题优先下载挑战载荷中的透明实体 PNG，通过轮廓 Hu 矩和全局一对一分配匹配目标；置信度不足时才回退 GLM。
+  - 空的 `/checkcaptcha/` 响应立即进入失败队列并刷新挑战，不再打印 JSON 解码堆栈或空等 30 秒。
+  - 登录结果等待期间不再在 `/id/login` 页面查询不存在的 `egs-navigation`；商店页面和认证后会话探针保持不变。
+  - 从运行 `29572502088` 下载的最新产物中回放全部 7 组多轮廓真实挑战，确定性拓扑匹配均返回完整一对一路径，最大轮廓匹配分数为 `0.0606`，无需调用 GLM。
+  - 完整测试集共 20 个通过；Black、Ruff、`py_compile` 和 `git diff --check` 均通过。
+  - 使用全新 Camoufox 用户目录完成本地真实端到端复测：邮箱密码登录、账号校验、商店会话校验、周免查询、订单历史核对和浏览器清理全部成功，进程退出码为 0；本次登录未下发拖拽题，两款本周周免均已拥有，因此没有重复执行 checkout。
+
+### 2026-07-17 同提交跨区域运行波动与单线段题推理超时
+
+- 现象：
+  - GitHub Actions 运行 `29577646160` 与 `29580804524` 均使用提交 `ffe6386`；前者在 `eastus` 成功，后者在 `westus` 三轮认证后失败，因此不是提交或模型配置漂移。
+  - 失败运行的首个单线段题没有生成模型答案并耗尽 120 秒；另一个单线段题等待 GLM 116 秒后把目标选到 3/5 号线段之外。相同运行中的多轮廓题均在约 3.5 秒内完成本地拓扑匹配。
+  - hCaptcha 的空 `/checkcaptcha/` 响应后经常在约 2 秒内继续到达有效结果，但上一版会立即压入失败信号；多个挑战显示成功后，Epic 仍因区域 IP 风险或挑战状态交错返回 `captcha_invalid`。
+- 根因判断：
+  - 编号单线段题仍依赖跨区域 GLM 视觉请求，单次 120 秒网络预算既会耗尽整个挑战，也无法保证 3/5 号线段配对正确。
+  - 空响应本身可能只是同一校验过程的中间响应，立即判失败会让旧失败信号与随后到达的有效结果交错。
+  - 三次独立认证在区域 IP 风险较高时容错不足；失败运行约 12 分钟即退出，尚未利用 Actions 现有 30 分钟上限内的剩余重试机会。
+- 改动文件：
+  - `app/extensions/hcaptcha_adapter.py`
+  - `app/extensions/llm_adapter.py`
+  - `app/services/epic_authorization_service.py`
+  - `app/settings.py`
+  - `tests/test_hcaptcha_adapter.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 单线段题使用 Hough 圆检测提取编号标记，并通过稳定的青色 3 号、黄色 5 号色彩关系定位缺口中点；起点继续使用挑战载荷坐标。置信度不足时才回退 GLM。
+  - 题目识别只依赖稳定的 `segment` 与 `line` 关键词，兼容 hCaptcha 在 `Please`、`drag`、`the`、`complete` 中混入的西里尔同形字符。
+  - 空校验响应增加 5 秒配对宽限；有效非空响应会取消延迟失败信号，确实没有后续结果时才刷新挑战。
+  - GLM 单次请求默认限制为 50 秒，避免一个区域网络慢请求独占 120 秒挑战预算；独立认证会话从 3 次增加到 5 次，GitHub Actions 的 30 分钟强制终止保持不变。
+  - 对成功与失败两次运行上传的全部 7 张真实单线段题回放，本地目标均成功解析；成功运行最终通过题的本地目标与已通过模型目标仅相差约 7 像素。
+  - 完整测试集共 23 个通过，Black、Ruff、`py_compile` 和 `git diff --check` 均通过。
+  - 使用全新 Camoufox 用户目录完成本地真实端到端复测，登录、账号校验、商店会话校验、周免查询、订单历史核对和浏览器清理全部成功，进程退出码为 0；本周周免已拥有，因此未重复进入 checkout。
+
+### 2026-07-18 单线段颜色定位未覆盖可移动编号 3 的布局
+
+- 现象：
+  - 现有颜色定位能准确处理 `1-5 / source=4` 布局，但对此前 Actions 产物中的 `1-6 / source=3` 布局会选择错误的固定颜色标记。
+  - 回放 13 张真实编号线段题时，颜色定位有 3 张无法解析；其余 source=3 样本与编号圆中点相差 24 至 79 像素。
+- 根因判断：
+  - 将青色与黄色固定解释为编号 3 和 5，只适用于缺少编号 4 的布局；缺少编号 3 时，目标应由编号 2 和 4 的圆心决定。
+  - 编号圆中的数字在已观察样本中稳定，可用有限数字模板做全局唯一编号分配，不需要调用外部视觉模型。
+- 改动文件：
+  - `app/extensions/numbered_line_solver.py`
+  - `app/extensions/hcaptcha_adapter.py`
+  - `tests/test_numbered_line_solver.py`
+  - `tests/test_hcaptcha_adapter.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 线段题优先识别 `1-5 / source=4` 与 `1-6 / source=3` 的编号圆，并将目标设为源编号前后两个圆心的中点；低置信度时保留现有颜色定位，再失败才回退 LLM。
+  - 13 张真实编号线段题全部解析，最高模板距离为 `0.185`；非线段的双形状题没有产生编号解。
+  - Fork 运行 `29563199230` 使用相同编号模板和中点规则完成登录及两款游戏领取，运行 `29563952219` 再次完成登录并从订单历史确认两款均已领取。
+  - 基于最新上游的 Fork 运行 `29622500920` 完成登录、商店会话验证和订单历史核对；该轮没有下发编号线段题，因此只作为集成无回归证据，不替代上述题图回放。
+  - 按仓库规则未执行测试；使用 Black、Ruff、`py_compile`、真实挑战图离线回放和 `git diff --check` 验证。
+
+## 2026-07-29
+
+### 同步上游 master，并保留 fork 的登录 Fallback 与可见 frame 验证码侦测
+
+- 现象：
+  - fork 落后上游 16 个 commit，同时本地有 7 个独有 commit（登录 Fallback、checkout 验证码侦测、Gemini 官方端点等）。
+- 根因判断：
+  - 两边在登录态检测、checkout 按钮定位、hCaptcha 可见性判定上各自演进，直接合并会产生冲突。
+- 改动文件：
+  - `app/services/epic_authorization_service.py`
+  - `app/services/epic_games_service.py`
+  - `app/extensions/llm_adapter.py`
+  - `README.md`
+  - `README.en.md`
+  - `docs/maintenance-log.md`
+  - 以及上游其余自动合并的 captcha / login / dependency 改动
+- 处理结果：
+  - 合并 `upstream/master` 到 fork `master`。
+  - 保留 fork 的 `_get_login_status` Fallback（Sign In 链接 + session cookies），并兼容上游 `warn_timeout` 与 order-history session probe。
+  - 保留 fork 的 `_frame_texts` 仅扫描可见 iframe，以及 checkout 安全验证可见性的 frame 文字扫描。
+  - 采用上游 `_ordered_checkout_containers` / `CHECKOUT_BUTTON_TEXTS` 与 numbered-line hCaptcha 等新修复。
+  - README 保留 fork 的 Gemini 优先文档结构，避免重复插入早期 GLM 配置块。
 
 

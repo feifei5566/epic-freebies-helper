@@ -82,13 +82,15 @@ Fork 之后先打开自己仓库的 `Actions` 页面，进入 `Epic Awesome Game
 - Fork 到自己的 GitHub 账号。
 - 打开 `Actions`，启用工作流 `Epic Awesome Gamer (Scheduled)`。
 
-### 2. 配置 Secrets
+### 2. 配置 Secrets 和 Variables
 
 进入 `Settings` -> `Secrets and variables` -> `Actions`。
 
+账号、密码和 API Key 必须放在 `Secrets`。`LLM_PROVIDER` 以及所有 `*_MODEL` 模型名属于非敏感配置，建议放在 `Variables`；工作流会优先读取 Variables，并继续兼容已有的同名 Secrets。程序启动时会打印实际模型路由，包括 `SPATIAL_PATH_REASONER_MODEL`。如果模型名仍保存在 Secrets 中，GitHub 会把日志里的同值自动显示为 `***`；迁移到 Variables 并删除同名 Secret 后即可正常显示。
+
 必须配置：
 
-| Secret | 示例值 |
+| 配置名 | 示例值 |
 | --- | --- |
 | `EPIC_EMAIL` | your_epic_email@example.com |
 | `EPIC_PASSWORD` | your_epic_password |
@@ -102,7 +104,7 @@ Fork 之后先打开自己仓库的 `Actions` 页面，进入 `Epic Awesome Game
 
 **如果你把 `LLM_PROVIDER` 设为 `gemini`，就必须填写 `GEMINI_API_KEY`；无需新建并填写 `GLM_API_KEY`。**
 
-| Secret | 示例值 |
+| 配置名 | 示例值 |
 | --- | --- |
 | `LLM_PROVIDER` | gemini |
 | `GEMINI_API_KEY` | 你的 Gemini API Key |
@@ -111,7 +113,7 @@ Fork 之后先打开自己仓库的 `Actions` 页面，进入 `Epic Awesome Game
 
 如果你使用 `AiHubMix` 这类 Gemini 兼容中转接口，请按下面这组填写：
 
-| Secret | 示例值 |
+| 配置名 | 示例值 |
 | --- | --- |
 | `LLM_PROVIDER` | gemini |
 | `GEMINI_API_KEY` | 你的 AiHubMix Key |
@@ -145,7 +147,7 @@ Fork 之后先打开自己仓库的 `Actions` 页面，进入 `Epic Awesome Game
 
 如果你确实要单独覆盖这 4 个模型，可以直接照下面填写：
 
-| Secret | GLM 示例值 | Gemini / AiHubMix 示例值 |
+| 配置名 | GLM 示例值 | Gemini / AiHubMix 示例值 |
 | --- | --- | --- |
 | `CHALLENGE_CLASSIFIER_MODEL` | 留空或 `glm-4.6v` | 留空或 `gemini-2.5-pro` |
 | `IMAGE_CLASSIFIER_MODEL` | 留空或 `glm-4.6v` | 留空或 `gemini-2.5-pro` |

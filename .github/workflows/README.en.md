@@ -31,7 +31,9 @@ The workflow is triggered by GitHub `schedule` and `workflow_dispatch`. APSchedu
 
 If you want a different time, edit the `schedule` section inside [`.github/workflows/epic-gamer.yml`](epic-gamer.yml). The easiest way is to open that file on GitHub, click the pencil icon, update the cron line, and commit the change.
 
-## Required Secrets
+## Secrets and Variables
+
+Keep account credentials and API keys in `Secrets`. Store `LLM_PROVIDER` and all `*_MODEL` names in `Variables`; the workflow reads Variables first and retains fallback support for existing Secrets. Startup logs print the effective model routing, including `SPATIAL_PATH_REASONER_MODEL`. GitHub masks values that still exist as Secrets.
 
 Required in all cases:
 
@@ -83,7 +85,7 @@ The program also checks these per-task overrides first. If they are not set, the
 - `SPATIAL_POINT_REASONER_MODEL`
 - `SPATIAL_PATH_REASONER_MODEL`
 
-These values can also be configured directly as GitHub Secrets. The workflow already passes them through.
+Store these non-sensitive values as GitHub Variables. Existing forks can continue using same-named Secrets through the workflow fallback.
 
 ## Local One-Shot Debugging
 

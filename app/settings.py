@@ -8,6 +8,7 @@ from hcaptcha_challenger.agent import AgentConfig
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import SettingsConfigDict
 
+from extensions.hcaptcha_adapter import apply_hcaptcha_drag_patch
 from extensions.llm_adapter import apply_llm_patch
 
 # --- 核心路径定义 ---
@@ -58,7 +59,8 @@ class EpicSettings(AgentConfig):
         default="https://open.bigmodel.cn/api/paas/v4", description="GLM OpenAI-compatible base URL"
     )
 
-    GLM_MODEL: str = Field(default="glm-4.5v", description="GLM vision-capable default model")
+    GLM_MODEL: str = Field(default="glm-4.6v", description="GLM vision-capable default model")
+    GLM_REQUEST_TIMEOUT_SECONDS: float = Field(default=50.0, gt=5.0, le=120.0)
 
     BROWSER_BACKEND: str = Field(
         default="auto", description="Supported values: auto, camoufox, playwright"
@@ -66,7 +68,7 @@ class EpicSettings(AgentConfig):
 
     EPIC_EMAIL: str = Field(default_factory=lambda: _env("EPIC_EMAIL"))
     EPIC_PASSWORD: SecretStr = Field(default_factory=lambda: _env("EPIC_PASSWORD"))
-    DISABLE_BEZIER_TRAJECTORY: bool = Field(default=True)
+    DISABLE_BEZIER_TRAJECTORY: bool = Field(default=False)
     WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS: int = Field(default=3000)
 
     CHALLENGE_CLASSIFIER_MODEL: str = Field(default="")
@@ -80,6 +82,7 @@ class EpicSettings(AgentConfig):
 
     ENABLE_APSCHEDULER: bool = Field(default=True)
     TASK_TIMEOUT_SECONDS: int = Field(default=900)
+    AUTH_MAX_ATTEMPTS: int = Field(default=5, ge=3, le=8)
     REDIS_URL: str = Field(default="redis://redis:6379/0")
     CELERY_WORKER_CONCURRENCY: int = Field(default=1)
     CELERY_TASK_TIME_LIMIT: int = Field(default=1200)
@@ -182,3 +185,4 @@ class EpicSettings(AgentConfig):
 settings = EpicSettings()
 settings.ignore_request_questions = ["Please drag the crossing to complete the lines"]
 apply_llm_patch(settings)
+apply_hcaptcha_drag_patch()

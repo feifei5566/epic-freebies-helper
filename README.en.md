@@ -82,13 +82,15 @@ After forking, open the `Actions` page in your fork, enter `Epic Awesome Gamer (
 - Fork the repo to your own GitHub account.
 - Open `Actions` and enable the workflow named `Epic Awesome Gamer (Scheduled)`.
 
-### 2. Configure Secrets
+### 2. Configure Secrets and Variables
 
 Go to `Settings` -> `Secrets and variables` -> `Actions`.
 
+Keep account credentials and API keys in `Secrets`. `LLM_PROVIDER` and all `*_MODEL` names are non-sensitive configuration and should be stored in `Variables`. The workflow reads Variables first while retaining fallback support for existing Secrets. Startup logs now print the effective model routing, including `SPATIAL_PATH_REASONER_MODEL`. GitHub masks any value that still exists as a Secret, so move the model name to Variables and remove the same-named Secret if you need the exact value to remain visible in logs.
+
 Required in all cases:
 
-| Secret | Example value |
+| Setting | Example value |
 | --- | --- |
 | `EPIC_EMAIL` | your_epic_email@example.com |
 | `EPIC_PASSWORD` | your_epic_password |
@@ -102,7 +104,7 @@ If you use the `official Gemini API`, use this set:
 
 **If you set `LLM_PROVIDER=gemini`, you must provide `GEMINI_API_KEY`; there is no need to create or fill `GLM_API_KEY`.**
 
-| Secret | Example value |
+| Setting | Example value |
 | --- | --- |
 | `LLM_PROVIDER` | gemini |
 | `GEMINI_API_KEY` | Your Gemini API key |
@@ -111,7 +113,7 @@ If you use the `official Gemini API`, use this set:
 
 If you use a Gemini-compatible relay such as `AiHubMix`, use this set:
 
-| Secret | Example value |
+| Setting | Example value |
 | --- | --- |
 | `LLM_PROVIDER` | gemini |
 | `GEMINI_API_KEY` | Your AiHubMix key |
@@ -146,7 +148,7 @@ Notes:
 
 If you do want to override those four model fields explicitly, use values like these:
 
-| Secret | GLM example | Gemini / AiHubMix example |
+| Setting | GLM example | Gemini / AiHubMix example |
 | --- | --- | --- |
 | `CHALLENGE_CLASSIFIER_MODEL` | empty or `glm-4.6v` | empty or `gemini-2.5-pro` |
 | `IMAGE_CLASSIFIER_MODEL` | empty or `glm-4.6v` | empty or `gemini-2.5-pro` |

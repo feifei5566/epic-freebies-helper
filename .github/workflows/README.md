@@ -31,7 +31,9 @@
 
 如果你想改成自己的时间，直接编辑 [`.github/workflows/epic-gamer.yml`](epic-gamer.yml) 里的 `schedule` 即可。最方便的方式是在 GitHub 网页里打开这个文件，点右上角铅笔按钮，修改 `cron` 后提交。
 
-## Secrets 配置
+## Secrets 和 Variables 配置
+
+账号、密码和 API Key 必须放在 `Secrets`。`LLM_PROVIDER` 和所有 `*_MODEL` 模型名建议放在 `Variables`，工作流会优先读取 Variables，并兼容已有的同名 Secrets。启动日志会打印包括 `SPATIAL_PATH_REASONER_MODEL` 在内的实际模型路由；仍保存在 Secrets 中的值会被 GitHub 自动遮罩为 `***`。
 
 必须配置：
 
@@ -83,7 +85,7 @@
 - `SPATIAL_POINT_REASONER_MODEL`
 - `SPATIAL_PATH_REASONER_MODEL`
 
-这些变量也可以直接作为 GitHub Secrets 配置，工作流已经会自动透传。
+这些非敏感配置建议作为 GitHub Variables 配置。为兼容已有 Fork，工作流仍会回退读取同名 Secrets。
 
 ## 本地单次调试
 

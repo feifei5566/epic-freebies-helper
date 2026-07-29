@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import ast
 import base64
 import json
 import mimetypes
@@ -15,15 +16,85 @@ KNOWN_CHALLENGE_TYPES = {
     "image_drag_single",
     "image_drag_multiple",
     "image_drag_multi",
+    "image_label_single_select",
     "image_label_binary",
     "image_label_multi_select",
     "image_label_area_select",
     "image_label_multiple_choice",
 }
 
-CHALLENGE_TYPE_ALIASES = {
+CHALLENGE_TYPE_ALIASES = {"image_drag_multi": "image_drag_multiple"}
+SCHEMA_CHALLENGE_TYPE_ALIASES = {
+    "image_drag_multiple": "image_drag_multi",
     "image_drag_multi": "image_drag_multiple",
 }
+
+CHALLENGE_PROMPT_ALIASES = (
+    "challenge_prompt",
+    "Challenge Prompt",
+    "challengePrompt",
+    "requester_question",
+)
+
+POINTS_ALIASES = ("points", "point", "coordinates", "Coordinates")
+
+PATHS_ALIASES = ("paths", "path", "coordinates", "Coordinates")
+
+DRAG_SOURCE_ALIASES = (
+    "source",
+    "from",
+    "source_coordinates",
+    "source_position",
+    "start",
+    "start_point",
+    "src",
+)
+
+DRAG_TARGET_ALIASES = (
+    "target",
+    "to",
+    "target_coordinates",
+    "target_position",
+    "end",
+    "end_point",
+    "dst",
+    "tgt",
+    "dest",
+    "destination",
+)
+
+GLM_VISUAL_COORDINATE_INSTRUCTION = (
+    "For image coordinate challenges, read the gray coordinate grid printed on the image. "
+    "Return final JSON coordinates in that printed grid coordinate system, not local image "
+    "pixels. Prefer the center of the target object unless the schema explicitly requires "
+    "a bounding box or a drag path."
+)
+
+GLM_COMPLEX_DRAG_INSTRUCTION = (
+    "For drag-path challenges, inspect the full scene before answering and count every movable "
+    "piece that must be placed. Return one paths entry per required move and never collapse a "
+    "multi-piece answer into a single path. When the prompt names a count such as TWO, the paths "
+    "array must contain exactly that many moves. Distinguish solid movable pieces from hollow or "
+    "outlined destinations, then pair each piece with its exact matching silhouette by shape, "
+    "color, size, and orientation; do not pair objects merely because they share a row. For "
+    "line-completion puzzles, follow the numbered endpoints in order and match each movable "
+    "segment by shape, color, and orientation. A movable segment labeled N belongs in the empty "
+    "space between the fixed N-1 and N+1 segments. Infer the final placement by translating the "
+    "whole segment until both ends connect; end_point is the center of the segment at that final "
+    "placement, never the coordinate of a numbered marker or an existing endpoint. For segment "
+    "4, use the corridor between fixed segments 3 and 5 as a sanity check: its final center is "
+    "normally near the midpoint of the numbered 3 and 5 circles, adjusted so both exposed ends "
+    "connect. Reject unrelated empty areas outside that corridor. Always use "
+    "the center of the movable piece as start_point and the center of its intended outline or "
+    "gap as end_point. Output only the response schema fields challenge_prompt and paths; do not "
+    "use aliases such as answer or src."
+)
+
+GLM_MULTI_TARGET_INSTRUCTION = (
+    "For multi-target selection challenges, inspect every candidate and return every matching "
+    "target, not only the first one. Use the center of each selected object and preserve a "
+    "stable visual reading order."
+)
 
 
 def _ensure_list(value: Any) -> list[Any]:
@@ -60,6 +131,44 @@ def _extract_json_payload(text: str) -> dict[str, Any]:
     return json.loads(stripped)
 
 
+def _extract_literal_payload(text: str) -> Any | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+
+    with suppress(Exception):
+        return _extract_json_payload(stripped)
+
+    with suppress(Exception):
+        if stripped.startswith("```"):
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)```", stripped)
+            if match:
+                stripped = match.group(1).strip()
+        return ast.literal_eval(stripped)
+
+    return None
+
+
+def _payload_value(payload: dict[str, Any], aliases: tuple[str, ...]) -> Any:
+    for alias in aliases:
+        if alias in payload:
+            return payload[alias]
+    return None
+
+
+def _coerce_challenge_prompt(payload: dict[str, Any]) -> str:
+    value = _payload_value(payload, CHALLENGE_PROMPT_ALIASES)
+    if isinstance(value, dict):
+        for key in ("en", "text", "value"):
+            candidate = value.get(key)
+            if candidate is not None:
+                return str(candidate)
+        return ""
+    if value is None:
+        return ""
+    return str(value)
+
+
 def _normalize_glm_response_text(text: str) -> str:
     stripped = text.strip()
     if not stripped:
@@ -80,12 +189,7 @@ def _normalize_glm_response_text(text: str) -> str:
             + json.dumps(
                 {
                     "challenge_prompt": "",
-                    "paths": [
-                        {
-                            "start_point": {"x": sx, "y": sy},
-                            "end_point": {"x": tx, "y": ty},
-                        }
-                    ],
+                    "paths": [{"start_point": {"x": sx, "y": sy}, "end_point": {"x": tx, "y": ty}}],
                 },
                 ensure_ascii=False,
             )
@@ -117,13 +221,7 @@ def _normalize_glm_response_text(text: str) -> str:
         points = [{"x": int(x), "y": int(y)} for x, y in point_matches]
         return (
             "```json\n"
-            + json.dumps(
-                {
-                    "challenge_prompt": "",
-                    "points": points,
-                },
-                ensure_ascii=False,
-            )
+            + json.dumps({"challenge_prompt": "", "points": points}, ensure_ascii=False)
             + "\n```"
         )
 
@@ -136,6 +234,39 @@ def _extract_challenge_type(text: str) -> str | None:
     if stripped in KNOWN_CHALLENGE_TYPES:
         return stripped
     return None
+
+
+def _schema_enum_values(schema: Any, field_name: str) -> set[str]:
+    if not (isinstance(schema, type) and issubclass(schema, BaseModel)):
+        return set()
+
+    field = getattr(schema, "model_fields", {}).get(field_name)
+    if not field:
+        return set()
+
+    annotation = getattr(field, "annotation", None)
+    members = getattr(annotation, "__members__", None)
+    if not members:
+        return set()
+
+    return {str(getattr(member, "value", member)) for member in members.values()}
+
+
+def _coerce_challenge_type_for_schema(
+    challenge_type: str | None, schema: Any, field_name: str
+) -> str | None:
+    if not challenge_type:
+        return None
+
+    enum_values = _schema_enum_values(schema, field_name)
+    if not enum_values or challenge_type in enum_values:
+        return challenge_type
+
+    alias = SCHEMA_CHALLENGE_TYPE_ALIASES.get(challenge_type)
+    if alias in enum_values:
+        return alias
+
+    return challenge_type
 
 
 def _extract_drag_points_from_text(text: str) -> tuple[dict[str, int], dict[str, int]] | None:
@@ -210,22 +341,169 @@ def _extract_drag_points_from_text(text: str) -> tuple[dict[str, int], dict[str,
     return None
 
 
+def _extract_drag_points_from_value(value: Any) -> tuple[dict[str, int], dict[str, int]] | None:
+    if isinstance(value, dict):
+        drag_paths = _extract_drag_paths_from_value(value)
+        if drag_paths:
+            first_path = drag_paths[0]
+            return first_path["start_point"], first_path["end_point"]
+
+        paths_payload = value.get("paths")
+        if isinstance(paths_payload, list):
+            for item in paths_payload:
+                points = _extract_drag_points_from_value(item)
+                if points:
+                    return points
+
+        coordinates_payload = _payload_value(value, PATHS_ALIASES)
+        if coordinates_payload is not None and coordinates_payload is not value:
+            points = _extract_drag_points_from_value(coordinates_payload)
+            if points:
+                return points
+
+    if isinstance(value, list):
+        for item in value:
+            points = _extract_drag_points_from_value(item)
+            if points:
+                return points
+
+    if isinstance(value, str):
+        parsed = _extract_literal_payload(value)
+        if parsed is not None and parsed != value:
+            points = _extract_drag_points_from_value(parsed)
+            if points:
+                return points
+        return _extract_drag_points_from_text(value)
+
+    return None
+
+
+def _extract_drag_paths_from_value(value: Any) -> list[dict[str, dict[str, int]]]:
+    if isinstance(value, dict):
+        paths: list[dict[str, dict[str, int]]] = []
+
+        for source_key in DRAG_SOURCE_ALIASES:
+            if source_key not in value:
+                continue
+            for target_key in DRAG_TARGET_ALIASES:
+                if target_key not in value:
+                    continue
+
+                sources = value.get(source_key)
+                targets = value.get(target_key)
+                if isinstance(sources, list) and isinstance(targets, list):
+                    source_points = [_coerce_point(item) for item in sources]
+                    target_points = [_coerce_point(item) for item in targets]
+                    if (
+                        source_points
+                        and len(source_points) == len(target_points)
+                        and all(source_points)
+                        and all(target_points)
+                    ):
+                        return [
+                            {"start_point": source, "end_point": target}
+                            for source, target in zip(source_points, target_points)
+                        ]
+
+                pair = _build_drag_points_pair(sources, targets)
+                if pair:
+                    return [{"start_point": pair[0], "end_point": pair[1]}]
+
+        for key in ("paths", "path", "coordinates", "Coordinates", "answer", "src"):
+            if key not in value:
+                continue
+            paths.extend(_extract_drag_paths_from_value(value.get(key)))
+            if paths:
+                return paths
+
+        return []
+
+    if isinstance(value, (list, tuple)):
+        values = list(value)
+        if len(values) == 4 and all(not isinstance(item, (dict, list, tuple)) for item in values):
+            pair = _build_drag_points_pair(values[:2], values[2:])
+            if pair:
+                return [{"start_point": pair[0], "end_point": pair[1]}]
+
+        nested_paths: list[dict[str, dict[str, int]]] = []
+        for item in values:
+            nested_paths.extend(_extract_drag_paths_from_value(item))
+        if nested_paths:
+            return nested_paths
+
+        if len(values) == 2:
+            pair = _build_drag_points_pair(values[0], values[1])
+            if pair:
+                return [{"start_point": pair[0], "end_point": pair[1]}]
+
+        point_values = [_coerce_point(item) for item in values]
+        if point_values and len(point_values) % 2 == 0 and all(point_values):
+            return [
+                {"start_point": point_values[index], "end_point": point_values[index + 1]}
+                for index in range(0, len(point_values), 2)
+            ]
+
+        return []
+
+    if isinstance(value, str):
+        parsed = _extract_literal_payload(value)
+        if parsed is not None and parsed != value:
+            paths = _extract_drag_paths_from_value(parsed)
+            if paths:
+                return paths
+
+        paths = []
+        for chunk in value.split(";"):
+            match = re.fullmatch(r"\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*", chunk)
+            if not match:
+                continue
+            sx, sy, tx, ty = map(int, match.groups())
+            paths.append({"start_point": {"x": sx, "y": sy}, "end_point": {"x": tx, "y": ty}})
+        if paths:
+            return paths
+
+        separated_pair = re.fullmatch(
+            r"\s*\(?\s*(-?\d+)\s*,\s*(-?\d+)\s*\)?\s*"
+            r"(?:\||->|=>|:)\s*"
+            r"\(?\s*(-?\d+)\s*,\s*(-?\d+)\s*\)?\s*",
+            value,
+        )
+        if separated_pair:
+            sx, sy, tx, ty = map(int, separated_pair.groups())
+            return [{"start_point": {"x": sx, "y": sy}, "end_point": {"x": tx, "y": ty}}]
+
+        pair = _extract_drag_points_from_text(value)
+        if pair:
+            return [{"start_point": pair[0], "end_point": pair[1]}]
+
+    return []
+
+
+def _build_drag_points_pair(
+    source: Any, target: Any
+) -> tuple[dict[str, int], dict[str, int]] | None:
+    start_point = _coerce_point(source)
+    end_point = _coerce_point(target)
+    if not start_point or not end_point:
+        return None
+    return start_point, end_point
+
+
 def _extract_points_from_text(text: str) -> list[dict[str, int]]:
     stripped = text.strip()
     if not stripped:
         return []
 
-    with suppress(Exception):
-        payload = _extract_json_payload(stripped)
-        points_payload = payload.get("points")
-        if isinstance(points_payload, list):
-            points = []
-            for point in points_payload:
-                normalized = _coerce_point(point)
-                if normalized:
-                    points.append(normalized)
-            if points:
-                return points
+    csv_point = re.fullmatch(r"\s*(\d+)\s*,\s*(\d+)\s*", stripped)
+    if csv_point:
+        x, y = map(int, csv_point.groups())
+        return [{"x": x, "y": y}]
+
+    literal_payload = _extract_literal_payload(stripped)
+    if literal_payload is not None:
+        points = _extract_points_from_value(literal_payload)
+        if points:
+            return points
 
     tuple_points = re.findall(r"\((\d+)\s*,\s*(\d+)\)", stripped)
     if tuple_points:
@@ -238,14 +516,64 @@ def _extract_points_from_text(text: str) -> list[dict[str, int]]:
     return []
 
 
-def _coerce_point(value: Any) -> dict[str, int] | None:
+def _extract_points_from_value(value: Any) -> list[dict[str, int]]:
     if isinstance(value, dict):
-        if "x" in value and "y" in value:
-            return {"x": int(value["x"]), "y": int(value["y"])}
-        return None
+        direct_point = _coerce_point(value)
+        if direct_point:
+            return [direct_point]
 
-    if isinstance(value, (list, tuple)) and len(value) >= 2:
-        return {"x": int(value[0]), "y": int(value[1])}
+        points_payload = _payload_value(value, POINTS_ALIASES)
+        if points_payload is not None and points_payload is not value:
+            points = _extract_points_from_value(points_payload)
+            if points:
+                return points
+
+        answer_payload = value.get("answer")
+        if answer_payload is not None:
+            points = _extract_points_from_value(answer_payload)
+            if points:
+                return points
+
+    if isinstance(value, list):
+        points: list[dict[str, int]] = []
+        boxes: list[dict[str, int]] = []
+        for item in value:
+            normalized_point = _coerce_point(item)
+            if normalized_point:
+                points.append(normalized_point)
+                continue
+            normalized_box = _coerce_area_box(item)
+            if normalized_box:
+                boxes.append(normalized_box)
+        if points:
+            return points
+        if boxes:
+            return [_box_center_point(box) for box in boxes]
+
+    if isinstance(value, str):
+        parsed = _extract_literal_payload(value)
+        if parsed is not None and parsed != value:
+            points = _extract_points_from_value(parsed)
+            if points:
+                return points
+        boxes = _extract_area_boxes_from_text(value)
+        if boxes:
+            return [_box_center_point(box) for box in boxes]
+
+    return []
+
+
+def _coerce_point(value: Any) -> dict[str, int] | None:
+    try:
+        if isinstance(value, dict):
+            if "x" in value and "y" in value:
+                return {"x": int(value["x"]), "y": int(value["y"])}
+            return None
+
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            return {"x": int(value[0]), "y": int(value[1])}
+    except (TypeError, ValueError):
+        return None
 
     if isinstance(value, str):
         match = re.search(r"(\d+)\s*,\s*(\d+)", value)
@@ -280,21 +608,13 @@ def _coerce_area_box(value: Any) -> dict[str, int] | None:
         matches = re.findall(r"\d+", value)
         if len(matches) >= 4:
             x_min, y_min, x_max, y_max = map(int, matches[:4])
-            return {
-                "x_min": x_min,
-                "y_min": y_min,
-                "x_max": x_max,
-                "y_max": y_max,
-            }
+            return {"x_min": x_min, "y_min": y_min, "x_max": x_max, "y_max": y_max}
 
     return None
 
 
 def _box_center_point(box: dict[str, int]) -> dict[str, int]:
-    return {
-        "x": (box["x_min"] + box["x_max"]) // 2,
-        "y": (box["y_min"] + box["y_max"]) // 2,
-    }
+    return {"x": (box["x_min"] + box["x_max"]) // 2, "y": (box["y_min"] + box["y_max"]) // 2}
 
 
 def _extract_area_boxes_from_text(text: str) -> list[dict[str, int]]:
@@ -302,17 +622,11 @@ def _extract_area_boxes_from_text(text: str) -> list[dict[str, int]]:
     if not stripped:
         return []
 
-    with suppress(Exception):
-        payload = _extract_json_payload(stripped)
-        answer_payload = payload.get("answer")
-        if isinstance(answer_payload, list):
-            boxes = []
-            for item in answer_payload:
-                normalized = _coerce_area_box(item)
-                if normalized:
-                    boxes.append(normalized)
-            if boxes:
-                return boxes
+    literal_payload = _extract_literal_payload(stripped)
+    if literal_payload is not None:
+        boxes = _extract_area_boxes_from_value(literal_payload)
+        if boxes:
+            return boxes
 
     dict_boxes = re.findall(
         r'"x_min"\s*:\s*(\d+)\s*,\s*"y_min"\s*:\s*(\d+)\s*,\s*"x_max"\s*:\s*(\d+)\s*,\s*"y_max"\s*:\s*(\d+)',
@@ -321,54 +635,63 @@ def _extract_area_boxes_from_text(text: str) -> list[dict[str, int]]:
     )
     if dict_boxes:
         return [
-            {
-                "x_min": int(x_min),
-                "y_min": int(y_min),
-                "x_max": int(x_max),
-                "y_max": int(y_max),
-            }
+            {"x_min": int(x_min), "y_min": int(y_min), "x_max": int(x_max), "y_max": int(y_max)}
             for x_min, y_min, x_max, y_max in dict_boxes
         ]
 
-    tuple_boxes = re.findall(
-        r"\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]",
-        stripped,
-    )
+    tuple_boxes = re.findall(r"\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]", stripped)
     if tuple_boxes:
         return [
-            {
-                "x_min": int(x_min),
-                "y_min": int(y_min),
-                "x_max": int(x_max),
-                "y_max": int(y_max),
-            }
+            {"x_min": int(x_min), "y_min": int(y_min), "x_max": int(x_max), "y_max": int(y_max)}
             for x_min, y_min, x_max, y_max in tuple_boxes
         ]
 
     return []
 
 
+def _extract_area_boxes_from_value(value: Any) -> list[dict[str, int]]:
+    if isinstance(value, dict):
+        direct_box = _coerce_area_box(value)
+        if direct_box:
+            return [direct_box]
+
+        for alias in ("answer", *POINTS_ALIASES):
+            if alias not in value:
+                continue
+            boxes = _extract_area_boxes_from_value(value[alias])
+            if boxes:
+                return boxes
+
+    if isinstance(value, list):
+        boxes = []
+        for item in value:
+            normalized = _coerce_area_box(item)
+            if normalized:
+                boxes.append(normalized)
+        if boxes:
+            return boxes
+
+    if isinstance(value, str):
+        parsed = _extract_literal_payload(value)
+        if parsed is not None and parsed != value:
+            boxes = _extract_area_boxes_from_value(parsed)
+            if boxes:
+                return boxes
+
+    return []
+
+
 def _build_points_payload(
-    points: list[dict[str, int]],
-    *,
-    challenge_prompt: str = "",
-    inferred_rule: str = "",
+    points: list[dict[str, int]], *, challenge_prompt: str = "", inferred_rule: str = ""
 ) -> dict[str, Any] | None:
     if not points:
         return None
 
-    return {
-        "challenge_prompt": challenge_prompt,
-        "inferred_rule": inferred_rule,
-        "points": points,
-    }
+    return {"challenge_prompt": challenge_prompt, "inferred_rule": inferred_rule, "points": points}
 
 
 def _build_area_select_payload(
-    boxes: list[dict[str, int]],
-    *,
-    challenge_prompt: str = "",
-    inferred_rule: str = "",
+    boxes: list[dict[str, int]], *, challenge_prompt: str = "", inferred_rule: str = ""
 ) -> dict[str, Any] | None:
     if not boxes:
         return None
@@ -381,11 +704,7 @@ def _build_area_select_payload(
 
 
 def _build_drag_payload(
-    source: Any,
-    target: Any,
-    *,
-    challenge_prompt: str = "",
-    inferred_rule: str = "",
+    source: Any, target: Any, *, challenge_prompt: str = "", inferred_rule: str = ""
 ) -> dict[str, Any] | None:
     start_point = _coerce_point(source)
     end_point = _coerce_point(target)
@@ -399,11 +718,17 @@ def _build_drag_payload(
     }
 
 
+def _build_drag_paths_payload(
+    paths: list[dict[str, dict[str, int]]], *, challenge_prompt: str = "", inferred_rule: str = ""
+) -> dict[str, Any] | None:
+    if not paths:
+        return None
+
+    return {"challenge_prompt": challenge_prompt, "inferred_rule": inferred_rule, "paths": paths}
+
+
 def _normalize_glm_answer_value(
-    value: Any,
-    *,
-    challenge_prompt: str = "",
-    inferred_rule: str = "",
+    value: Any, *, challenge_prompt: str = "", inferred_rule: str = ""
 ) -> dict[str, Any] | None:
     if isinstance(value, dict):
         return _normalize_glm_payload(
@@ -429,13 +754,10 @@ def _normalize_glm_answer_value(
             "request_type": challenge_type,
         }
 
-    points = _extract_drag_points_from_text(stripped)
+    points = _extract_drag_points_from_value(stripped)
     if points:
         return _build_drag_payload(
-            points[0],
-            points[1],
-            challenge_prompt=challenge_prompt,
-            inferred_rule=inferred_rule,
+            points[0], points[1], challenge_prompt=challenge_prompt, inferred_rule=inferred_rule
         )
 
     point_payload = _build_points_payload(
@@ -474,14 +796,18 @@ def _coerce_payload_for_schema(payload: dict[str, Any], schema: Any, text: str) 
     if not fields:
         return payload
 
-    challenge_prompt = str(payload.get("challenge_prompt") or "")
+    challenge_prompt = _coerce_challenge_prompt(payload)
     inferred_rule = str(payload.get("inferred_rule") or "")
 
     if "paths" in fields:
-        if "paths" in payload:
-            payload.setdefault("challenge_prompt", challenge_prompt)
-            payload.setdefault("inferred_rule", inferred_rule)
-            return payload
+        raw_payload = _extract_literal_payload(text)
+        for candidate in (raw_payload, payload):
+            drag_paths = _extract_drag_paths_from_value(candidate)
+            normalized_paths = _build_drag_paths_payload(
+                drag_paths, challenge_prompt=challenge_prompt, inferred_rule=inferred_rule
+            )
+            if normalized_paths:
+                return normalized_paths
 
         normalized_drag = None
         if "source" in payload and "target" in payload:
@@ -495,6 +821,13 @@ def _coerce_payload_for_schema(payload: dict[str, Any], schema: Any, text: str) 
             normalized_drag = _build_drag_payload(
                 payload.get("from"),
                 payload.get("to"),
+                challenge_prompt=challenge_prompt,
+                inferred_rule=inferred_rule,
+            )
+        elif "source_coordinates" in payload and "target_coordinates" in payload:
+            normalized_drag = _build_drag_payload(
+                payload.get("source_coordinates"),
+                payload.get("target_coordinates"),
                 challenge_prompt=challenge_prompt,
                 inferred_rule=inferred_rule,
             )
@@ -512,6 +845,16 @@ def _coerce_payload_for_schema(payload: dict[str, Any], schema: Any, text: str) 
                 challenge_prompt=challenge_prompt,
                 inferred_rule=inferred_rule,
             )
+        elif _payload_value(payload, PATHS_ALIASES) is not None:
+            coordinate_payload = _payload_value(payload, PATHS_ALIASES)
+            extracted_drag = _extract_drag_points_from_value(coordinate_payload)
+            if extracted_drag:
+                normalized_drag = _build_drag_payload(
+                    extracted_drag[0],
+                    extracted_drag[1],
+                    challenge_prompt=challenge_prompt,
+                    inferred_rule=inferred_rule,
+                )
 
         if not normalized_drag:
             points_payload = payload.get("points")
@@ -554,10 +897,18 @@ def _coerce_payload_for_schema(payload: dict[str, Any], schema: Any, text: str) 
                     boxes.append(normalized)
             if boxes:
                 return _build_area_select_payload(
-                    boxes,
-                    challenge_prompt=challenge_prompt,
-                    inferred_rule=inferred_rule,
+                    boxes, challenge_prompt=challenge_prompt, inferred_rule=inferred_rule
                 )
+
+        coordinate_payload = _payload_value(payload, POINTS_ALIASES)
+        if coordinate_payload is not None and coordinate_payload is not payload:
+            points_payload = _build_points_payload(
+                _extract_points_from_value(coordinate_payload),
+                challenge_prompt=challenge_prompt,
+                inferred_rule=inferred_rule,
+            )
+            if points_payload:
+                return points_payload
 
         if "points" in payload:
             payload.setdefault("challenge_prompt", challenge_prompt)
@@ -572,7 +923,11 @@ def _coerce_payload_for_schema(payload: dict[str, Any], schema: Any, text: str) 
             return point_payload
 
     challenge_type_field = next(
-        (name for name in ("challenge_type", "request_type", "task_type", "type") if name in fields),
+        (
+            name
+            for name in ("challenge_type", "request_type", "task_type", "type")
+            if name in fields
+        ),
         None,
     )
     if challenge_type_field:
@@ -582,6 +937,9 @@ def _coerce_payload_for_schema(payload: dict[str, Any], schema: Any, text: str) 
             or payload.get("request_type")
             or _extract_challenge_type(text)
             or _extract_challenge_type(str(payload.get("answer") or ""))
+        )
+        challenge_type = _coerce_challenge_type_for_schema(
+            challenge_type, schema, challenge_type_field
         )
         if challenge_type:
             normalized = {challenge_type_field: challenge_type}
@@ -595,13 +953,11 @@ def _coerce_payload_for_schema(payload: dict[str, Any], schema: Any, text: str) 
 
 
 def _normalize_glm_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    challenge_prompt = str(payload.get("challenge_prompt") or "")
+    challenge_prompt = _coerce_challenge_prompt(payload)
     inferred_rule = str(payload.get("inferred_rule") or "")
 
     normalized_answer = _normalize_glm_answer_value(
-        payload.get("answer"),
-        challenge_prompt=challenge_prompt,
-        inferred_rule=inferred_rule,
+        payload.get("answer"), challenge_prompt=challenge_prompt, inferred_rule=inferred_rule
     )
     if normalized_answer:
         return normalized_answer
@@ -650,10 +1006,7 @@ def _normalize_glm_payload(payload: dict[str, Any]) -> dict[str, Any]:
     points = _extract_drag_points_from_text(raw_text)
     if points:
         normalized = _build_drag_payload(
-            points[0],
-            points[1],
-            challenge_prompt=challenge_prompt,
-            inferred_rule=inferred_rule,
+            points[0], points[1], challenge_prompt=challenge_prompt, inferred_rule=inferred_rule
         )
         if normalized:
             return normalized
@@ -700,7 +1053,7 @@ class _GLMAsyncModels:
 
     def _to_image_part(self, payload: bytes, mime_type: str) -> dict[str, Any]:
         encoded = base64.b64encode(payload).decode("utf-8")
-        return {"type": "image_url", "image_url": {"url": encoded}}
+        return {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}}
 
     def _part_to_content_item(self, part: Any) -> dict[str, Any] | None:
         text = getattr(part, "text", None)
@@ -732,10 +1085,12 @@ class _GLMAsyncModels:
 
     def _build_messages(self, contents: Any, config: Any) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
+        system_messages: list[str] = []
+        has_image = False
 
         system_instruction = getattr(config, "system_instruction", None)
         if system_instruction:
-            messages.append({"role": "system", "content": str(system_instruction)})
+            system_messages.append(str(system_instruction))
 
         for content in _ensure_list(contents):
             role = getattr(content, "role", None) or "user"
@@ -743,20 +1098,28 @@ class _GLMAsyncModels:
             for part in _ensure_list(getattr(content, "parts", None)):
                 item = self._part_to_content_item(part)
                 if item:
+                    if item.get("type") == "image_url":
+                        has_image = True
                     items.append(item)
             if not items:
                 continue
             messages.append({"role": role, "content": items})
 
+        if has_image:
+            system_messages.append(GLM_VISUAL_COORDINATE_INSTRUCTION)
+            response_fields = _schema_field_names(getattr(config, "response_schema", None))
+            if "paths" in response_fields:
+                system_messages.append(GLM_COMPLEX_DRAG_INSTRUCTION)
+            elif "points" in response_fields:
+                system_messages.append(GLM_MULTI_TARGET_INSTRUCTION)
+
+        if system_messages:
+            messages.insert(0, {"role": "system", "content": "\n\n".join(system_messages)})
+
         return messages
 
     def _build_payload(
-        self,
-        *,
-        model: str,
-        contents: Any,
-        config: Any,
-        kwargs: dict[str, Any],
+        self, *, model: str, contents: Any, config: Any, kwargs: dict[str, Any]
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model,
@@ -803,9 +1166,7 @@ class _GLMAsyncModels:
 
         try:
             payload = _coerce_payload_for_schema(
-                _normalize_glm_payload(_extract_json_payload(text)),
-                schema,
-                text,
+                _normalize_glm_payload(_extract_json_payload(text)), schema, text
             )
         except Exception:
             normalized = _normalize_glm_answer_value(text)
@@ -857,10 +1218,7 @@ class _GLMAsyncModels:
             return
 
         logger.error(
-            "GLM request failed | status={} | code={} | body={}",
-            response.status_code,
-            code,
-            body,
+            "GLM request failed | status={} | code={} | body={}", response.status_code, code, body
         )
 
     async def generate_content(self, model: str, contents: Any, **kwargs) -> _PatchedResponse:
@@ -878,7 +1236,10 @@ class _GLMAsyncModels:
             "Content-Type": "application/json",
         }
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=30.0)) as client:
+        request_timeout = float(self._settings.GLM_REQUEST_TIMEOUT_SECONDS)
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(request_timeout, connect=min(30.0, request_timeout))
+        ) as client:
             response = await client.post(endpoint, headers=headers, json=payload)
             if response.is_error:
                 self._log_glm_error(response)
@@ -954,8 +1315,7 @@ def apply_gemini_patch(settings: Any):
                     file_uri = getattr(file_data, "file_uri", None) if file_data else None
                     if file_uri in file_cache:
                         content.parts[index] = types.Part.from_bytes(
-                            data=file_cache[file_uri],
-                            mime_type=_guess_mime_type(file_uri),
+                            data=file_cache[file_uri], mime_type=_guess_mime_type(file_uri)
                         )
 
             return await orig_generate(self_models, model=model, contents=normalized, **kwargs)
@@ -986,17 +1346,13 @@ def apply_llm_patch(settings: Any):
     provider = settings.LLM_PROVIDER.lower()
     if provider == "glm":
         if not settings.GLM_API_KEY:
-            logger.error(
-                "LLM provider misconfigured | LLM_PROVIDER=glm but GLM_API_KEY is empty"
-            )
+            logger.error("LLM provider misconfigured | LLM_PROVIDER=glm but GLM_API_KEY is empty")
             return
         apply_glm_patch(settings)
         return
 
     if provider == "gemini" and not settings.GEMINI_API_KEY:
-        logger.error(
-            "LLM provider misconfigured | LLM_PROVIDER=gemini but GEMINI_API_KEY is empty"
-        )
+        logger.error("LLM provider misconfigured | LLM_PROVIDER=gemini but GEMINI_API_KEY is empty")
         return
 
     apply_gemini_patch(settings)
