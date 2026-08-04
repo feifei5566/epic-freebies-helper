@@ -39,8 +39,27 @@ Required in all cases:
 
 | Secret | Description |
 | --- | --- |
-| `EPIC_EMAIL` | Epic account email, with 2FA disabled |
-| `EPIC_PASSWORD` | Epic account password, with 2FA disabled |
+| `EPIC_EMAIL` | Epic account email; email/SMS 2FA must be disabled |
+| `EPIC_PASSWORD` | Epic account password; email/SMS 2FA must be disabled |
+
+If the account uses authenticator-app 2FA, optionally configure:
+
+| Secret | Description |
+| --- | --- |
+| `EPIC_TOTP_SECRET` | The Base32 secret encoded in the authenticator QR code; do not enter the current six-digit code |
+
+When this Secret is absent, the existing login behavior remains unchanged. Email codes, SMS codes, and Passkeys are not supported.
+
+To receive Telegram claim summaries, optionally configure:
+
+| Secret | Description |
+| --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token |
+| `TELEGRAM_CHAT_ID` | Telegram chat ID |
+
+Both Secrets must be present before a notification is sent. Delivery failures do not affect the claim task; when they are absent, the existing behavior remains unchanged.
+
+If shared cloud IP reputation causes harder hCaptcha challenges, you may optionally add a `BROWSER_PROXY` Secret in the form `http://username:password@host:port`, `https://...`, `socks4://...`, or `socks5://...`. Browser networking is unchanged when it is absent.
 
 If you use the official Gemini API:
 

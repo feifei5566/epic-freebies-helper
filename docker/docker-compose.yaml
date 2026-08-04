@@ -32,11 +32,14 @@ services:
       # 运行参数
       # ----------------------------------------
       - ENABLE_APSCHEDULER=true
+      - BROWSER_BACKEND=auto
+      - HEADLESS=virtual
+      - BROWSER_PROXY=${BROWSER_PROXY:-}
       
       - DISABLE_BEZIER_TRAJECTORY=false
       - EXECUTION_TIMEOUT=120
       - RESPONSE_TIMEOUT=30
-      - RETRY_ON_FAILURE=true
+      - RETRY_ON_FAILURE=false
       - WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS=1500
       - CONSTRAINT_RESPONSE_SCHEMA=true
       - CHALLENGE_CLASSIFIER_MODEL=gemini-2.5-flash

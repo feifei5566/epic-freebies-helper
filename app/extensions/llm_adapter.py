@@ -9,25 +9,13 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from hcaptcha_challenger.models import ChallengeTypeEnum, RequestType
 from loguru import logger
 from pydantic import BaseModel
 
-KNOWN_CHALLENGE_TYPES = {
-    "image_drag_single",
-    "image_drag_multiple",
-    "image_drag_multi",
-    "image_label_single_select",
-    "image_label_binary",
-    "image_label_multi_select",
-    "image_label_area_select",
-    "image_label_multiple_choice",
-}
-
-CHALLENGE_TYPE_ALIASES = {"image_drag_multi": "image_drag_multiple"}
-SCHEMA_CHALLENGE_TYPE_ALIASES = {
-    "image_drag_multiple": "image_drag_multi",
-    "image_drag_multi": "image_drag_multiple",
-}
+CHALLENGE_TYPE_VALUES = frozenset(member.value for member in ChallengeTypeEnum)
+REQUEST_TYPE_VALUES = frozenset(member.value for member in RequestType)
+KNOWN_CHALLENGE_TYPES = CHALLENGE_TYPE_VALUES | REQUEST_TYPE_VALUES
 
 CHALLENGE_PROMPT_ALIASES = (
     "challenge_prompt",
@@ -230,7 +218,6 @@ def _normalize_glm_response_text(text: str) -> str:
 
 def _extract_challenge_type(text: str) -> str | None:
     stripped = text.strip().strip('"').strip("'")
-    stripped = CHALLENGE_TYPE_ALIASES.get(stripped, stripped)
     if stripped in KNOWN_CHALLENGE_TYPES:
         return stripped
     return None
@@ -262,11 +249,7 @@ def _coerce_challenge_type_for_schema(
     if not enum_values or challenge_type in enum_values:
         return challenge_type
 
-    alias = SCHEMA_CHALLENGE_TYPE_ALIASES.get(challenge_type)
-    if alias in enum_values:
-        return alias
-
-    return challenge_type
+    return None
 
 
 def _extract_drag_points_from_text(text: str) -> tuple[dict[str, int], dict[str, int]] | None:

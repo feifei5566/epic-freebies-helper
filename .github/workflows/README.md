@@ -39,8 +39,27 @@
 
 | Secret | 说明 |
 | --- | --- |
-| `EPIC_EMAIL` | Epic 邮箱，需关闭 2FA |
-| `EPIC_PASSWORD` | Epic 密码，需关闭 2FA |
+| `EPIC_EMAIL` | Epic 邮箱，需关闭邮箱 / 短信 2FA |
+| `EPIC_PASSWORD` | Epic 密码，需关闭邮箱 / 短信 2FA |
+
+如果账号启用了验证器 App 2FA，可额外配置：
+
+| Secret | 说明 |
+| --- | --- |
+| `EPIC_TOTP_SECRET` | 验证器二维码对应的 Base32 密钥；不要填写当前显示的 6 位动态验证码 |
+
+未配置时保持现有登录行为。邮箱验证码、短信验证码和 Passkey 暂不支持。
+
+如需接收 Telegram 领取结果通知，可额外配置：
+
+| Secret | 说明 |
+| --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token |
+| `TELEGRAM_CHAT_ID` | Telegram 聊天 ID |
+
+两个 Secret 需要同时存在才会发送通知。发送失败不会影响领取任务；未配置时保持现有行为。
+
+如果共享云 IP 导致 hCaptcha 风控加重，可选添加 `BROWSER_PROXY` Secret，格式为 `http://用户名:密码@主机:端口`、`https://...`、`socks4://...` 或 `socks5://...`。未配置时网络路径保持不变。
 
 如果你使用 Gemini 官方接口：
 

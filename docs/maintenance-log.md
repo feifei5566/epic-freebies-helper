@@ -971,6 +971,258 @@
   - 基于最新上游的 Fork 运行 `29622500920` 完成登录、商店会话验证和订单历史核对；该轮没有下发编号线段题，因此只作为集成无回归证据，不替代上述题图回放。
   - 按仓库规则未执行测试；使用 Black、Ruff、`py_compile`、真实挑战图离线回放和 `git diff --check` 验证。
 
+### 2026-07-22 验证器 2FA 账号无法自动完成登录
+
+- 现象：
+  - 当前登录流程遇到 Epic 验证器 MFA 页面时直接终止，使用验证器 App 2FA 的账号必须先关闭该安全设置才能运行。
+- 根因判断：
+  - 登录状态机只识别二步验证错误，没有生成、填写和重新提交 TOTP 的处理路径，也没有对应的 Secret 注入配置。
+- 改动文件：
+  - `.github/workflows/epic-gamer.yml`
+  - `.github/workflows/README.md`
+  - `.github/workflows/README.en.md`
+  - `README.md`
+  - `README.en.md`
+  - `app/services/epic_authorization_service.py`
+  - `app/services/epic_totp_service.py`
+  - `pyproject.toml`
+  - `uv.lock`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 新增可选的 `EPIC_TOTP_SECRET`，使用 Base32 密钥生成 6 位 TOTP，并支持单输入框和分离式输入框。
+  - 验证码临近过期时等待新时间窗口；Epic 返回无效或过期时重新生成，hCaptcha 打断后如仍需 MFA 则重新提交。
+  - TOTP 总提交次数限制为 6 次，无效或过期拒绝次数限制为 3 次；未配置密钥时保持原有行为。
+  - 密钥不写入日志，验证码输入框在填写前进行视觉遮罩，并在失败截图前清空，避免完整验证码进入日志、截图或录屏；邮箱验证码、短信验证码和 Passkey 不在本次范围。
+  - 按仓库规则未执行测试；使用 Black、Ruff、`py_compile`、workflow YAML 解析、依赖锁核对和 `git diff --check` 进行静态验证。
+
+### 2026-07-22 领取结果只能通过 Actions 日志查看
+
+- 现象：
+  - 定时任务结束后没有外部结果摘要，用户需要打开 GitHub Actions 日志才能确认本周游戏、领取状态及失败原因。
+- 根因判断：
+  - 领取入口没有保存执行前后的订单历史快照，也没有统一的结果分类模型和可选通知通道。
+- 改动文件：
+  - `.github/workflows/epic-gamer.yml`
+  - `.github/workflows/README.md`
+  - `.github/workflows/README.en.md`
+  - `README.md`
+  - `README.en.md`
+  - `app/deploy.py`
+  - `app/services/epic_collection_summary_service.py`
+  - `app/services/epic_games_service.py`
+  - `app/services/telegram_notification_service.py`
+  - `pyproject.toml`
+  - `uv.lock`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 新增领取前后订单历史快照，根据命名空间区分本次新领取、此前已拥有、未确认成功及明确失败的游戏。
+  - 异常后仍尝试刷新订单历史，避免把已经入库的游戏误报为失败；订单历史不可用时降级为未确认。
+  - 新增可选的 `TELEGRAM_BOT_TOKEN` 与 `TELEGRAM_CHAT_ID`，发送运行状态、游戏分类和精简失败原因。
+  - Telegram 消息转义 HTML 并按完整行截断；格式化、配置或网络错误均按非致命失败处理，不改变领取结果。
+  - 未配置两个 Telegram Secret 时保持原有领取行为，不额外发送通知。
+  - 按仓库规则未执行测试；Ruff、`py_compile`、workflow YAML 解析、依赖锁核对和 `git diff --check` 通过，Black 对入口及两个新增服务检查通过；共享游戏服务保留上游既有换行格式，避免引入无关格式化差异。
+
+### 2026-07-30 补充 GLM 资源包到期提示并忽略本地 Claude 配置
+
+- 现象：
+  - GLM 首次实名认证赠送的资源包存在有效期，资源包到期后运行日志会出现余额不足或无可用资源包的 `429` 错误。
+  - `.claude/settings.local.json` 属于开发者本机权限配置，不应继续由仓库跟踪。
+- 根因判断：
+  - README 尚未说明 GLM 免费资源包的有效期和对应错误含义。
+  - `.claude/` 目录此前未被 `.gitignore` 排除。
+- 改动文件：
+  - `.gitignore`
+  - `.claude/settings.local.json`
+  - `README.md`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - README 补充 GLM 资源包有效期及 `429` 余额不足错误的处理说明。
+  - Git 忽略整个 `.claude/` 目录，并停止跟踪现有的本地 Claude 配置文件。
+
+### 2026-07-30 修复登录挑战抢占与 hCaptcha 重试契约
+
+- 现象：
+  - Fork Actions 运行 `30520354795` 在 `westus` 连续 5 次登录失败，日志均显示等待 `#sign-in` 超时。
+  - 运行上传的失败截图显示 hCaptcha 拖拽题已经覆盖登录表单，说明挑战在代码点击登录按钮前或点击过程中就已出现，但 solver 尚未进入 `wait_for_challenge()`。
+  - 当前 `hcaptcha-challenger 0.19.0` 只接受 `image_drag_multi`，适配层却仍会在纯文本兜底路径中把它改写为无效的 `image_drag_multiple`。
+  - 上游 `RETRY_ON_FAILURE` 默认开启，业务层未读取 `ChallengeSignal`，购物车购买路径还会在失败后无界递归调用自身。
+- 根因判断：
+  - 登录流程把“点击 `#sign-in` 成功返回”作为启动 solver 的前置条件，没有处理 hCaptcha 抢先覆盖按钮的竞态。
+  - challenge type 使用了脱离上游枚举的手写别名，且依赖允许跨 minor 版本自由漂移。
+  - 上游和业务层同时拥有重试控制，但两层都缺少统一信号日志和明确上限。
+- 改动文件：
+  - `app/extensions/hcaptcha_runtime.py`
+  - `app/extensions/llm_adapter.py`
+  - `app/services/epic_authorization_service.py`
+  - `app/services/epic_games_service.py`
+  - `app/settings.py`
+  - `scripts/check_hcaptcha_contract.py`
+  - `tests/test_glm_adapter.py`
+  - `.github/workflows/epic-gamer.yml`
+  - `.env.example`
+  - `pyproject.toml`
+  - `uv.lock`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 登录提交现在会识别“hCaptcha 已经出现”以及“挑战在点击过程中替换按钮”两种状态，直接进入 solver，不再把挑战页误报为 `#sign-in` 缺失。
+  - 登录、checkout、隐性挑战探测、延长探测和购物车购买统一读取并记录 `ChallengeSignal`，外层等待均有明确超时。
+  - challenge type 直接来自上游 `ChallengeTypeEnum` / `RequestType`；无效别名被删除，schema 不再接受枚举外的归一化结果。
+  - `RETRY_ON_FAILURE` 默认关闭，购物车购买最多尝试 3 次；`hcaptcha-challenger` 依赖限制为 `>=0.19,<0.20`。
+  - Actions 增加 hCaptcha 协议契约检查；纯文本 `image_drag_multi` 增加回归用例代码，pytest 路径配置为 `app`。
+  - 按仓库规则未执行测试；hCaptcha 契约脚本、Ruff、Black、`py_compile` 和 `git diff --check` 用于静态验证。
+
+### 2026-07-30 修正 Telegram 领取摘要的非致命降级
+
+- 现象：
+  - PR #25 在领取前直接读取促销和订单历史，任一摘要快照失败都会阻止核心领取流程。
+  - 领取过程抛错后，代码会把所有尚未出现在订单历史中的游戏标记为明确失败，即使它们可能尚未尝试或订单历史尚未同步。
+- 根因判断：
+  - 可选通知的观测步骤位于核心领取调用之前且没有降级边界；异常分类又把“没有成功证据”错误等同于“存在失败证据”。
+- 改动文件：
+  - `app/services/epic_collection_summary_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 领取前促销或订单快照失败时继续执行核心领取，并在摘要中记录快照不可用。
+  - 领取后的订单快照失败时返回未确认摘要，不再把已经完成的领取改判为任务失败。
+  - 领取异常时只确认快照能够证明的新领取项目，其余项目归为未确认，不再无证据地标记为失败。
+
+### 2026-07-30 收紧 TOTP 输入与 hCaptcha 恢复边界
+
+- 现象：
+  - PR #24 的兜底输入路径即使没有成功聚焦验证码控件，也会向当前页面焦点键入完整 TOTP。
+  - MFA 阶段调用 hCaptcha solver 后没有检查 `ChallengeSignal`，失败信号也会被当成已解决；多次等待登录结果还会重置 TOTP 次数限制。
+- 根因判断：
+  - 兜底输入、挑战完成和重试上限分别依赖“已调用”而不是可验证的成功结果，状态又被限制在单次等待函数内部。
+- 改动文件：
+  - `app/services/epic_authorization_service.py`
+  - `app/services/epic_totp_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 只有成功聚焦并遮罩候选验证码控件后才允许键盘输入 TOTP。
+  - MFA hCaptcha 统一使用有外层超时的挑战 helper，并且只接受 `ChallengeSignal.SUCCESS`。
+  - TOTP 提交、无效拒绝和验证码后刷新状态在整个认证运行中累计，无法通过重复进入等待函数绕过上限。
+
+### 2026-07-30 保证 Telegram 与 TOTP 未配置时不改变旧流程
+
+- 现象：
+  - Telegram 未配置时虽然发送函数会跳过，但领取入口仍无条件建立摘要，并额外读取促销与领取前后的订单历史。
+  - TOTP 未配置时，认证异常清理仍会检查并尝试清空 MFA 输入框；进入 MFA 分支后才会发现缺少 Secret。
+- 根因判断：
+  - 两个可选功能只在各自执行末端判断配置，门控位置晚于它们新增的页面和网络操作。
+- 改动文件：
+  - `app/deploy.py`
+  - `app/services/telegram_notification_service.py`
+  - `app/services/epic_authorization_service.py`
+  - `app/services/epic_totp_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 只有 `TELEGRAM_BOT_TOKEN` 与 `TELEGRAM_CHAT_ID` 同时存在时才启用摘要快照和通知；缺少任一配置时直接执行原始领取路径。
+  - 只有 `EPIC_TOTP_SECRET` 存在时才选择验证器方式、读取或清理 MFA 输入框以及生成和提交 TOTP。
+  - 两项功能完整配置后保持现有功能；未配置或配置不完整时不报错，也不增加对应的页面、订单历史或通知请求。
+
+### 2026-07-30 补齐浏览器代理与 virtual 降级语义
+
+- 现象：
+  - GitHub Actions 使用共享云 IP，但浏览器没有可选代理入口，用户无法自行降低数据中心 IP 带来的 hCaptcha 风控。
+  - workflow 已运行在 Xvfb 中，主入口却把浏览器固定为真 headless；Playwright fallback 又把 `virtual` 转成 headless，浪费虚拟显示环境。
+  - Camoufox 自动降级到普通 Playwright Firefox 时只有普通 warning，且 Docker 示例仍开启上游无界 `RETRY_ON_FAILURE`。
+- 根因判断：
+  - 浏览器配置只覆盖后端选择，没有统一网络出口、显示模式和降级可观测性；Docker 示例也未同步业务层已接管重试上限的新策略。
+- 改动文件：
+  - `app/settings.py`
+  - `app/services/browser_context.py`
+  - `app/deploy.py`
+  - `app/schedule/collect_epic_games_task.py`
+  - `.env.example`
+  - `.github/workflows/epic-gamer.yml`
+  - `.github/workflows/README.md`
+  - `.github/workflows/README.en.md`
+  - `README.md`
+  - `README.en.md`
+  - `docker/docker-compose.yaml`
+  - `docker/.env`
+  - `docs/advanced.md`
+  - `docs/advanced.en.md`
+  - `docs/hcaptcha-reliability-plan.md`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 新增可选且日志遮罩的 `BROWSER_PROXY`，严格解析 HTTP(S)/SOCKS URL，并同时透传 Camoufox 与 Playwright；未配置时保留原网络路径。
+  - Linux、Actions 与 Celery 统一使用 `virtual`；Playwright fallback 优先复用外部 `DISPLAY`，没有时自行创建并清理 Xvfb，不再退化成真 headless。
+  - 自动从 Camoufox 降级时记录 error 级后端状态，运行日志只显示是否启用代理，不输出代理地址或凭据。
+  - Camoufox fallback 只捕获浏览器启动异常；领取过程中的业务异常会原样上抛，不会被误判为启动失败并重复执行。
+  - Docker 示例关闭上游递归重试，与应用层有界重试保持一致；模型分工建议因缺少分题型数据暂不调整。
+
+### 2026-07-31 修复 README Star 趋势图失效
+
+- 现象：
+  - 中英文 README 引用的 `api.star-history.com/chart` 明暗主题图片均返回 HTTP 503，仓库首页无法显示 Star 趋势。
+- 根因判断：
+  - GitHub 在 2026 年 7 月将 Stargazers 列表及时间戳限制为仓库管理员和协作者可读，Star History 公共服务不具备本仓库权限，旧的匿名实时图无法继续生成。
+- 改动文件：
+  - `scripts/generate_star_history.py`
+  - `.github/workflows/update-star-history.yml`
+  - `docs/images/star-history-light.svg`
+  - `docs/images/star-history-dark.svg`
+  - `README.md`
+  - `README.en.md`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - README 改用仓库内的明暗主题 SVG，不再依赖会返回 503 的第三方实时图片接口。
+  - 新增每日定时及手动触发的 Action，使用本仓库短期 `GITHUB_TOKEN` 从 GitHub API 获取 Stargazer 时间戳并更新图表，不需要公开个人 PAT。
+  - 更新任务只在上游仓库执行，Fork 与原有领取工作流不受影响；Star 数据没有变化时不会创建空提交。
+
+### 2026-07-31 可选多账号支持（保持单账号路径不变）
+
+- 现象：
+  - 需要在同一个 Fork / 同一次 workflow 中顺序处理多个 Epic 账号，但现有用户仍只配置 `EPIC_EMAIL` / `EPIC_PASSWORD`。
+  - 早期多账号实现会把单账号也送进聚合循环，改写异常类型与诊断栈；部分非法 `EPIC_ACCOUNTS` 行会被静默跳过。
+  - 多账号场景下 Telegram 摘要无法区分是哪个账号的结果。
+- 根因判断：
+  - 多账号必须是完全可选能力：未启用时要走与 master 完全相同的单账号调用链。
+  - `EPIC_ACCOUNTS` 部分合法、部分非法时若静默省略，会造成“配置写了 3 个账号但只跑了 2 个却显示成功”的假阴性。
+  - Telegram 通知在多账号下需要账号归因，同时单账号默认文案不能变。
+- 改动文件：
+  - `app/accounts.py`
+  - `app/deploy.py`
+  - `app/settings.py`
+  - `app/services/telegram_notification_service.py`
+  - `.github/workflows/epic-gamer.yml`
+  - `.env.example`
+  - `README.md`
+  - `README.en.md`
+  - `tests/test_accounts.py`
+  - `tests/test_telegram_account_label.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 可选 `EPIC_ACCOUNTS`（多行 `email:password`）；未配置或全非法时回退/直通原有 `EPIC_EMAIL` / `EPIC_PASSWORD` 单账号路径，直接调用 `execute_browser_tasks_with_notification()`，不做 `swap_account` 或异常聚合。
+  - 仅在全部非空行都合法时进入多账号顺序执行；若同时存在合法与非法行，任务以配置错误失败并列出非法行号，不会静默跳过。
+  - 密码允许包含冒号（只按第一个 `:` 分割）；邮箱做轻量格式校验。
+  - 每个账号切换 `settings.EPIC_EMAIL` / `EPIC_PASSWORD` 后复用现有登录、hCaptcha、TOTP、Telegram 与 browser runtime；浏览器 profile 仍按邮箱隔离。
+  - 多账号 Telegram 摘要增加打码后的 `账号：` 标签；单账号不传 `account_label`，消息格式保持不变。
+  - `EPIC_TOTP_SECRET` 仍为全局限制（本版已知限制，文档已说明）；工作流超时可通过 `JOB_TIMEOUT_MINUTES` 配置（默认 60）。
+  - 补充针对缺省 `EPIC_ACCOUNTS`、全非法回退、部分非法失败、密码含冒号、单账号通知格式不变的回归测试。
+
+### 2026-07-31 收紧多账号无效配置与 profile 路径边界
+
+- 现象：
+  - `EPIC_ACCOUNTS` 全部无效且没有备用单账号凭据时，分发器仍会以空邮箱和密码启动浏览器。
+  - 多账号邮箱的轻量校验允许路径分隔符，而浏览器 profile 目录直接按邮箱派生。
+  - 既有测试覆盖了解析函数，但没有验证单账号分发器保持原始调用链和异常对象。
+- 根因判断：
+  - 全无效配置的回退条件没有确认 `EPIC_EMAIL` 与 `EPIC_PASSWORD` 同时存在。
+  - 邮箱格式判断只检查了 `@`、域名和普通空格，没有覆盖文件路径与控制字符。
+- 改动文件：
+  - `app/accounts.py`
+  - `app/deploy.py`
+  - `tests/test_accounts.py`
+  - `README.md`
+  - `README.en.md`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 全无效多账号配置仅在备用邮箱和密码完整时回退；否则在启动浏览器前报告明确配置错误。
+  - 多账号邮箱拒绝 `/`、`\`、空白和控制字符，避免 profile 路径逃逸。
+  - 增加分发器回归覆盖，验证单账号直通、原始异常对象不被替换、合法回退以及无凭据快速失败。
+
 ## 2026-07-29
 
 ### 同步上游 master，并保留 fork 的登录 Fallback 与可见 frame 验证码侦测
@@ -1015,5 +1267,22 @@
   - 登录后挑战循环改为：已有可见 captcha 时主动求解；否则短超时监听 latent challenge；重提交密码表单时同样可走 captcha-aware 点击。
   - 扩充 captcha 文案标记（drag piece / tap everything / matching half）以匹配本次失败截图类型。
   - 按仓库规则未执行测试；使用 `py_compile` 与静态检查验证语法。
+
+### 同步上游 master（落后 25 commit）
+
+- 现象：
+  - fork `master` 相对 `upstream/master` 落后 25 个 commit，本地另有 9 个独有 commit（含登录 captcha 修复、登录态 Fallback、Gemini 优先等）。
+- 根因判断：
+  - 上游新增了多账号、TOTP 验证器登录、Telegram 通知、hCaptcha runtime 强化等能力；需要合并并保留 fork 特有修复。
+- 改动文件：
+  - `app/services/epic_authorization_service.py`（冲突解决）
+  - `README.md` / `README.en.md`（冲突解决）
+  - `docs/maintenance-log.md`
+  - 以及上游自动合并的多账号 / TOTP / Telegram / hcaptcha runtime 等文件
+- 处理结果：
+  - 合并 `upstream/master`，接入多账号、`EPIC_TOTP_SECRET`、Telegram 通知、`wait_for_challenge_signal` 等上游改动。
+  - 保留 fork 的 captcha-aware 登录（`_click_login_control` / `_wait_for_password_form` / `_solve_visible_hcaptcha`）与登录态 Fallback。
+  - 登录后挑战循环采用上游 `wait_for_challenge_signal`；README 保留 Gemini 优先说明，同时补上 TOTP / Telegram / 代理文档。
+  - 按仓库规则未执行测试；使用 `py_compile` 与冲突标记扫描做静态验证。
 
 

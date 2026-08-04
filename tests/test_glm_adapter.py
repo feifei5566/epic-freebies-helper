@@ -8,6 +8,7 @@ from hcaptcha_challenger.models import (
 
 from extensions.llm_adapter import (
     _coerce_payload_for_schema,
+    _extract_challenge_type,
     _extract_json_payload,
     _normalize_glm_payload,
 )
@@ -201,4 +202,16 @@ def test_router_drag_multi_alias_matches_current_schema_enum():
     challenge = ChallengeRouterResult(**payload)
 
     assert challenge.challenge_prompt == ""
+    assert challenge.challenge_type.value == "image_drag_multi"
+
+
+def test_router_plain_text_drag_multi_remains_upstream_enum_value():
+    text = "image_drag_multi"
+    challenge_type = _extract_challenge_type(text)
+
+    payload = _coerce_payload_for_schema(
+        {"challenge_type": challenge_type}, ChallengeRouterResult, text
+    )
+    challenge = ChallengeRouterResult(**payload)
+
     assert challenge.challenge_type.value == "image_drag_multi"

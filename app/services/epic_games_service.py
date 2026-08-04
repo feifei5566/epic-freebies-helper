@@ -13,6 +13,7 @@ from typing import List
 
 import httpx
 from hcaptcha_challenger.agent import AgentV
+from hcaptcha_challenger.models import ChallengeSignal
 from loguru import logger
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Frame, Page
@@ -20,6 +21,7 @@ from playwright.async_api import expect, TimeoutError, FrameLocator
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt
 
+from extensions.hcaptcha_runtime import wait_for_challenge_signal
 from models import OrderItem, Order
 from models import PromotionGame
 from services.epic_authorization_service import EpicManualActionRequiredError
@@ -295,8 +297,18 @@ class EpicAgent:
                     completed_orders.append(item)
         except Exception as err:
             logger.warning(err)
+            self._orders = []
+            return False
         self._orders = completed_orders
         return True
+
+    async def refresh_order_namespaces(self) -> set[str]:
+        self._orders = []
+        self._namespaces = []
+        if not await self._sync_order_history():
+            raise RuntimeError("Failed to load Epic order history")
+        self._namespaces = [order.namespace for order in self._orders]
+        return set(self._namespaces)
 
     async def _check_orders(self):
         await self._sync_order_history()
@@ -1222,7 +1234,22 @@ class EpicGames:
             await page.wait_for_timeout(2500)
 
             try:
-                await agent.wait_for_challenge()
+                remaining_seconds = max(1.0, max_wait_ms / 1000 - (time.monotonic() - started_at))
+                challenge_signal = await wait_for_challenge_signal(
+                    agent,
+                    context=f"checkout:{attempt}",
+                    timeout_seconds=min(
+                        settings.EXECUTION_TIMEOUT + settings.RESPONSE_TIMEOUT + 5,
+                        remaining_seconds,
+                    ),
+                )
+                if challenge_signal is not ChallengeSignal.SUCCESS:
+                    logger.warning(
+                        "Checkout hCaptcha did not succeed | attempt={} | signal={} | url={}",
+                        attempt,
+                        challenge_signal.value,
+                        url,
+                    )
             except Exception as err:
                 logger.warning(
                     f"Checkout security check solve attempt failed (attempt {attempt}): {err}"
@@ -1266,7 +1293,9 @@ class EpicGames:
             return True
 
         try:
-            await asyncio.wait_for(agent.wait_for_challenge(), timeout=25)
+            challenge_signal = await wait_for_challenge_signal(
+                agent, context="checkout_probe", timeout_seconds=25
+            )
         except Exception as err:
             if await self._is_checkout_security_check_visible(page):
                 logger.warning(
@@ -1276,6 +1305,9 @@ class EpicGames:
             logger.info(f"No solvable latent checkout challenge detected: {err}")
             return False
 
+        logger.debug(
+            "Checkout challenge probe completed | signal={} | url={}", challenge_signal.value, url
+        )
         await page.wait_for_timeout(1500)
         await self._capture_purchase_debug(page, "checkout_challenge_probe", url)
         return True
@@ -1289,7 +1321,9 @@ class EpicGames:
         )
 
         try:
-            await asyncio.wait_for(agent.wait_for_challenge(), timeout=timeout_seconds)
+            challenge_signal = await wait_for_challenge_signal(
+                agent, context="checkout_extended_probe", timeout_seconds=timeout_seconds
+            )
         except Exception as err:
             if await self._is_checkout_security_check_visible(page):
                 logger.warning(
@@ -1303,6 +1337,11 @@ class EpicGames:
             )
             return False
 
+        logger.debug(
+            "Extended checkout challenge probe completed | signal={} | url={}",
+            challenge_signal.value,
+            url,
+        )
         await page.wait_for_timeout(1500)
         await self._capture_purchase_debug(page, "checkout_challenge_extended_probe", url)
         return True
@@ -1805,25 +1844,47 @@ class EpicGames:
             logger.warning("Failed to empty shopping cart", err=err)
             return False
 
-    async def _purchase_free_game(self):
-        await self.page.goto(URL_CART, wait_until="domcontentloaded")
-        logger.debug("Move ALL paid games from the shopping cart out")
-        await self._empty_cart(self.page)
+    async def _purchase_free_game(self, max_attempts: int = 3):
+        last_error: Exception | None = None
 
-        agent = AgentV(page=self.page, agent_config=settings)
-        await self.page.click("//button//span[text()='Check Out']")
-        await self._agree_license(self.page)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await self.page.goto(URL_CART, wait_until="domcontentloaded")
+                logger.debug("Move ALL paid games from the shopping cart out")
+                await self._empty_cart(self.page)
 
-        try:
-            logger.debug("Move to webPurchaseContainer iframe")
-            wpc, payment_btn = await self._active_purchase_container(self.page)
-            logger.debug("Click payment button")
-            await self._uk_confirm_order(wpc)
-            await agent.wait_for_challenge()
-        except Exception as err:
-            logger.warning(f"Failed to solve captcha - {err}")
-            await self.page.reload()
-            return await self._purchase_free_game()
+                agent = AgentV(page=self.page, agent_config=settings)
+                await self.page.click("//button//span[text()='Check Out']")
+                await self._agree_license(self.page)
+
+                logger.debug("Move to webPurchaseContainer iframe")
+                wpc, payment_btn = await self._active_purchase_container(self.page)
+                logger.debug("Click payment button")
+                await self._uk_confirm_order(wpc)
+                challenge_signal = await wait_for_challenge_signal(
+                    agent,
+                    context=f"cart_purchase:{attempt}",
+                    timeout_seconds=settings.EXECUTION_TIMEOUT + settings.RESPONSE_TIMEOUT + 5,
+                )
+                if challenge_signal is ChallengeSignal.SUCCESS:
+                    return
+                raise RuntimeError(f"cart purchase hCaptcha returned {challenge_signal.value}")
+            except Exception as err:
+                last_error = err
+                logger.warning(
+                    "Failed to complete cart purchase captcha | attempt={}/{} | err={!r}",
+                    attempt,
+                    max_attempts,
+                    err,
+                )
+                if attempt < max_attempts:
+                    with suppress(Exception):
+                        await self.page.reload(wait_until="domcontentloaded")
+                    await self.page.wait_for_timeout(2000)
+
+        raise RuntimeError(
+            f"Failed to complete cart purchase after {max_attempts} attempts"
+        ) from last_error
 
     @retry(retry=retry_if_exception_type(TimeoutError), stop=stop_after_attempt(2), reraise=True)
     async def collect_weekly_games(self, promotions: List[PromotionGame]):
