@@ -269,8 +269,125 @@ class EpicAuthorization:
                 "please complete a security check",
                 "verify you are human",
                 "i am human",
+                "please drag the piece",
+                "tap everything",
+                "matching half",
             )
         )
+
+    async def _solve_visible_hcaptcha(
+        self, agent: AgentV, *, reason: str, max_attempts: int = 3
+    ) -> bool:
+        """Clear a captcha that is already covering the login form.
+
+        Returns True when no visible hCaptcha remains.
+        """
+        if not await self._has_visible_hcaptcha():
+            return True
+
+        for attempt in range(1, max_attempts + 1):
+            logger.warning(
+                "Visible hCaptcha during login ({}); solving attempt {}/{}",
+                reason,
+                attempt,
+                max_attempts,
+            )
+            try:
+                await agent.wait_for_challenge()
+            except Exception as err:
+                logger.warning(
+                    "Login captcha solve attempt failed ({}, attempt {}/{}): {!r}",
+                    reason,
+                    attempt,
+                    max_attempts,
+                    err,
+                )
+
+            await self.page.wait_for_timeout(1500)
+            if not await self._has_visible_hcaptcha():
+                logger.success("hCaptcha cleared during login ({})", reason)
+                return True
+
+        still_visible = await self._has_visible_hcaptcha()
+        if still_visible:
+            logger.warning(
+                "hCaptcha still visible after {} solve attempts ({})", max_attempts, reason
+            )
+        return not still_visible
+
+    async def _wait_for_password_form(self, agent: AgentV, timeout_ms: int = 30000) -> None:
+        """Wait for the password field, solving any captcha that appears after Continue."""
+        deadline = time.monotonic() + timeout_ms / 1000
+        password_input = self.page.locator("#password")
+
+        while time.monotonic() < deadline:
+            with suppress(Exception):
+                if await password_input.is_visible(timeout=500):
+                    return
+
+            if await self._has_visible_hcaptcha():
+                await self._solve_visible_hcaptcha(agent, reason="waiting for password form")
+                continue
+
+            await self.page.wait_for_timeout(400)
+
+        raise PlaywrightTimeoutError("Timed out waiting for Epic password form")
+
+    async def _click_login_control(
+        self,
+        selector: str,
+        agent: AgentV,
+        *,
+        step_name: str,
+        timeout_ms: int = 45000,
+    ) -> None:
+        """Click a login control even when hCaptcha intermittently covers the form.
+
+        Epic sometimes shows a challenge before #sign-in becomes actionable. Waiting on a
+        hard page.click timeout wastes the attempt without giving the solver a chance to run.
+        """
+        deadline = time.monotonic() + timeout_ms / 1000
+        locator = self.page.locator(selector)
+        last_error: Exception | None = None
+
+        while time.monotonic() < deadline:
+            if await self._has_visible_hcaptcha():
+                await self._solve_visible_hcaptcha(agent, reason=f"before {step_name}")
+                # After a challenge clears, re-check whether login already succeeded.
+                if selector == "#sign-in" and "/id/login" not in self.page.url:
+                    return
+                continue
+
+            try:
+                await expect(locator).to_be_visible(timeout=1500)
+                await expect(locator).to_be_enabled(timeout=1500)
+                await locator.click(timeout=5000)
+                await self.page.wait_for_timeout(500)
+
+                # Click may itself open a challenge before the form advances.
+                if await self._has_visible_hcaptcha():
+                    await self._solve_visible_hcaptcha(agent, reason=f"after {step_name}")
+                return
+            except Exception as err:
+                last_error = err
+                if await self._has_visible_hcaptcha():
+                    await self._solve_visible_hcaptcha(
+                        agent, reason=f"during {step_name} click failure"
+                    )
+                    continue
+                await self.page.wait_for_timeout(400)
+
+        if await self._has_visible_hcaptcha():
+            await self._solve_visible_hcaptcha(
+                agent, reason=f"final attempt before {step_name}", max_attempts=2
+            )
+            with suppress(Exception):
+                await locator.click(timeout=5000)
+                return
+
+        if last_error is not None:
+            raise last_error
+        raise PlaywrightTimeoutError(f"Timed out clicking login control {selector} ({step_name})")
 
     async def _wait_for_login_form(self, point_url: str) -> None:
         deadline = time.monotonic() + 45
@@ -385,18 +502,27 @@ class EpicAuthorization:
         with suppress(Exception):
             await old_page.close()
 
-    async def _resubmit_password_form(self) -> bool:
+    async def _resubmit_password_form(self, agent: AgentV | None = None) -> bool:
         password_input = self.page.locator("#password")
         sign_in_button = self.page.locator("#sign-in")
 
         try:
-            await password_input.wait_for(state="visible", timeout=1000)
-            await sign_in_button.wait_for(state="visible", timeout=1000)
+            if agent is not None and await self._has_visible_hcaptcha():
+                await self._solve_visible_hcaptcha(agent, reason="before password resubmit")
+
+            await password_input.wait_for(state="visible", timeout=3000)
+            await sign_in_button.wait_for(state="visible", timeout=3000)
 
             if not await password_input.input_value(timeout=1000):
                 await password_input.fill(settings.EPIC_PASSWORD.get_secret_value())
 
-            await sign_in_button.click(timeout=5000)
+            if agent is not None:
+                await self._click_login_control(
+                    "#sign-in", agent, step_name="password resubmit sign-in", timeout_ms=20000
+                )
+            else:
+                await sign_in_button.click(timeout=5000)
+
             await self.page.wait_for_timeout(1000)
             return True
         except PlaywrightTimeoutError:
@@ -538,23 +664,35 @@ class EpicAuthorization:
             email_input = self.page.locator("#email")
             await email_input.fill(settings.EPIC_EMAIL)
 
-            # 2. 点击继续按钮
-            await self.page.click("#continue")
+            # 2. 点击继续按钮（Continue 后也可能先出 captcha）
+            await self._click_login_control(
+                "#continue", agent, step_name="continue", timeout_ms=30000
+            )
 
-            # 3. 输入密码
+            # 3. 输入密码（等待期间若 captcha 盖住表单则先解）
+            await self._wait_for_password_form(agent, timeout_ms=30000)
             password_input = self.page.locator("#password")
-            await expect(password_input).to_be_visible(timeout=10000)
             await password_input.fill(settings.EPIC_PASSWORD.get_secret_value())
 
-            # 4. 点击登录按钮，触发人机挑战值守监听器
-            # Active hCaptcha checkbox
-            await self.page.click("#sign-in")
+            # 4. 点击登录按钮；若 captcha 在 #sign-in 可点前出现，先解再点
+            await self._click_login_control(
+                "#sign-in", agent, step_name="sign-in", timeout_ms=60000
+            )
 
             login_confirmed = False
             for challenge_attempt in range(1, 4):
                 logger.debug("Solving login challenge attempt {}/3", challenge_attempt)
-                with suppress(Exception):
-                    await agent.wait_for_challenge()
+
+                if await self._has_visible_hcaptcha():
+                    await self._solve_visible_hcaptcha(
+                        agent,
+                        reason=f"post sign-in challenge attempt {challenge_attempt}",
+                        max_attempts=2,
+                    )
+                else:
+                    # Latent challenge may appear after Sign In without an already-visible frame.
+                    with suppress(Exception):
+                        await agent.wait_for_challenge()
 
                 try:
                     await self._await_login_outcome(point_url, timeout_seconds=25)
@@ -569,7 +707,7 @@ class EpicAuthorization:
                         )
                         continue
 
-                    if challenge_attempt < 3 and await self._resubmit_password_form():
+                    if challenge_attempt < 3 and await self._resubmit_password_form(agent):
                         logger.warning(
                             "Login captcha disappeared without authentication; resubmitted the "
                             "password form before solve attempt {}/3",

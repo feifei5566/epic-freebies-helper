@@ -994,4 +994,26 @@
   - 采用上游 `_ordered_checkout_containers` / `CHECKOUT_BUTTON_TEXTS` 与 numbered-line hCaptcha 等新修复。
   - README 保留 fork 的 Gemini 优先文档结构，避免重复插入早期 GLM 配置块。
 
+## 2026-08-04
+
+### 登录在 `#sign-in` 前被 hCaptcha 挡住时不再空等超时
+
+- 现象：
+  - GitHub Actions 运行 `30563455446` 在 `Run Epic Awesome Gamer` 失败。
+  - 日志连续 5 次：`Page.click: Timeout 30000ms exceeded`，locator 为 `#sign-in`。
+  - 失败截图全是 hCaptcha 挑战（拖拽拼图 / 点选类），认证最终 `Authentication failed after 5 attempts`。
+- 根因判断：
+  - 登录流程写死「先点 `#sign-in`，再 `wait_for_challenge`」。
+  - CI / 高风险 IP 下 captcha 会在 `#sign-in` 可点之前就盖住表单；主流程空等 30 秒超时，solver 根本来不及介入。
+  - `#continue` 之后到密码框可见之间同样可能出现挑战，旧逻辑也没有解。
+- 改动文件：
+  - `app/services/epic_authorization_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 新增 `_solve_visible_hcaptcha`、`_wait_for_password_form`、`_click_login_control`：在 Continue / 等密码 / Sign In 任一阶段侦测到可见 captcha 就先解再继续。
+  - `#sign-in` 点击改为最长约 60 秒的可恢复循环，超时前会反复尝试解 captcha，而不是一次 `page.click` 硬超时直接丢掉整轮登录。
+  - 登录后挑战循环改为：已有可见 captcha 时主动求解；否则短超时监听 latent challenge；重提交密码表单时同样可走 captcha-aware 点击。
+  - 扩充 captcha 文案标记（drag piece / tap everything / matching half）以匹配本次失败截图类型。
+  - 按仓库规则未执行测试；使用 `py_compile` 与静态检查验证语法。
+
 
