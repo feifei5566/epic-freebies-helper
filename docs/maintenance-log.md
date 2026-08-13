@@ -1448,3 +1448,24 @@
   - 指针被 talon / hCaptcha 拦截时只求解验证码，不再回退到社交登录按钮。
   - 可见 captcha 判定补上 `talon_container_*` 与本次拖动题文案。
   - 按仓库规则未执行测试；使用 `py_compile` 做静态验证。
+
+### 登录 Continue 空点超时、解题吃掉密码等待，以及 Gemini 日额度耗尽
+
+- 现象：
+  - GitHub Actions 运行 `31661994546` 失败。Apple 误点已不再出现。
+  - 第 1 次：`#continue` 已可见但 `Locator.click` 卡在 `performing click action` 5 秒超时。
+  - 第 2 次：Continue 后出现拖动题，解题 120 秒后立刻报 `Timed out waiting for Epic password form`。
+  - 第 3 次已进入密码页并提交，随后 Gemini 报 `429 RESOURCE_EXHAUSTED`（`gemini-3-flash` 免费档每天 20 次），后面两次认证继续空转解题。
+- 根因判断：
+  - Continue 点击未使用 `no_wait_after`，页面跳转或遮罩出现时 Playwright 会把一次已发出的点击判失败。
+  - 密码表单 30 秒截止时间包含 captcha 解题时间；`wait_for_challenge` 默认 120 秒，解完后循环已过期。
+  - 免费 Gemini 日额度用尽后仍按 5 轮认证重试，只会重复 429。
+- 改动文件：
+  - `app/services/epic_authorization_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 登录按钮点击改为 `no_wait_after`；若点击超时但密码页或验证码已出现，视为点击已生效。
+  - 解完登录验证码后重置密码表单等待截止时间。
+  - 识别 Gemini 免费档日额度耗尽后立即终止认证，不再空转剩余轮次。
+  - 按仓库规则未执行测试；使用 `py_compile` 做静态验证。
+  - 本次未再触发 Actions：当前 API key 的免费日额度已用尽，立刻重跑仍会 429。

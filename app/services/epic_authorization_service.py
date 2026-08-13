@@ -55,6 +55,17 @@ class EpicManualActionRequiredError(RuntimeError):
     pass
 
 
+class EpicLlmQuotaExhaustedError(RuntimeError):
+    pass
+
+
+def _is_daily_llm_quota_error(err: Exception) -> bool:
+    text = str(err)
+    return "RESOURCE_EXHAUSTED" in text and (
+        "GenerateRequestsPerDay" in text or "FreeTier" in text
+    )
+
+
 class EpicAuthorization:
 
     def __init__(self, page: Page):
@@ -371,6 +382,12 @@ class EpicAuthorization:
             try:
                 await agent.wait_for_challenge()
             except Exception as err:
+                if _is_daily_llm_quota_error(err):
+                    raise EpicLlmQuotaExhaustedError(
+                        "Gemini daily quota exhausted while solving login captcha. "
+                        "Free-tier gemini-3-flash allows 20 requests/day; wait for reset "
+                        "or switch GEMINI_API_KEY / GEMINI_MODEL."
+                    ) from err
                 logger.warning(
                     "Login captcha solve attempt failed ({}, attempt {}/{}): {!r}",
                     reason,
@@ -431,6 +448,7 @@ class EpicAuthorization:
 
             if await self._has_visible_hcaptcha():
                 await self._solve_visible_hcaptcha(agent, reason="waiting for password form")
+                deadline = max(deadline, time.monotonic() + timeout_ms / 1000)
                 continue
 
             if await self._has_blocking_talon_overlay():
@@ -480,7 +498,7 @@ class EpicAuthorization:
 
             try:
                 await expect(locator).to_be_enabled(timeout=1500)
-                await locator.click(timeout=5000)
+                await locator.click(timeout=5000, no_wait_after=True)
                 await self.page.wait_for_timeout(500)
 
                 # Click may itself open a challenge before the form advances.
@@ -489,7 +507,18 @@ class EpicAuthorization:
                 return
             except Exception as err:
                 last_error = err
-                if self._is_pointer_intercept_error(err) or await self._has_visible_hcaptcha():
+                click_advanced = await self._has_visible_hcaptcha()
+                if is_sign_in_step:
+                    click_advanced = click_advanced or "/id/login" not in self.page.url
+                else:
+                    click_advanced = click_advanced or await self._password_step_visible()
+                if click_advanced:
+                    if await self._has_visible_hcaptcha():
+                        await self._solve_visible_hcaptcha(
+                            agent, reason=f"after {step_name} click timeout"
+                        )
+                    return
+                if self._is_pointer_intercept_error(err):
                     await self._solve_visible_hcaptcha(
                         agent, reason=f"during {step_name} click failure"
                     )
@@ -737,6 +766,12 @@ class EpicAuthorization:
                             self.page.url,
                         )
                 except Exception as err:
+                    if _is_daily_llm_quota_error(err):
+                        raise EpicLlmQuotaExhaustedError(
+                            "Gemini daily quota exhausted while solving login captcha. "
+                            "Free-tier gemini-3-flash allows 20 requests/day; wait for reset "
+                            "or switch GEMINI_API_KEY / GEMINI_MODEL."
+                        ) from err
                     logger.warning(
                         "Login captcha solve attempt failed during authentication outcome | err={!r}",
                         err,
@@ -1071,6 +1106,17 @@ class EpicAuthorization:
             if isinstance(err, EpicManualActionRequiredError):
                 logger.error(str(err))
                 raise
+            if isinstance(err, EpicLlmQuotaExhaustedError):
+                logger.error(str(err))
+                raise
+            if _is_daily_llm_quota_error(err):
+                quota_err = EpicLlmQuotaExhaustedError(
+                    "Gemini daily quota exhausted while solving login captcha. "
+                    "Free-tier gemini-3-flash allows 20 requests/day; wait for reset "
+                    "or switch GEMINI_API_KEY / GEMINI_MODEL."
+                )
+                logger.error(str(quota_err))
+                raise quota_err from err
             return None
 
     async def invoke(self) -> bool:
@@ -1099,6 +1145,8 @@ class EpicAuthorization:
                     return True
             except EpicManualActionRequiredError:
                 raise
+            except EpicLlmQuotaExhaustedError:
+                return False
             except EpicAuthenticationFatalError:
                 logger.error("Authentication aborted because Epic 2FA is still enabled")
                 return False
