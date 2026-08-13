@@ -35,11 +35,15 @@ PASSWORD_INPUT_SELECTORS = (
 )
 SIGN_IN_CONTROL_SELECTORS = (
     "#sign-in",
-    "button[type='submit']",
-    "button:has-text('Sign in')",
-    "button:has-text('Sign In')",
-    "[role='button']:has-text('Sign in')",
-    "[role='button']:has-text('Sign In')",
+    "button#sign-in",
+    "button[type='submit']:not([id^='login-with-'])",
+    "//button[normalize-space()='Sign in' or normalize-space()='Sign In']",
+    "//*[@role='button'][normalize-space()='Sign in' or normalize-space()='Sign In']"
+    "[not(starts-with(@id, 'login-with-'))]",
+)
+PASSWORD_STEP_MARKERS = (
+    "Enter your password",
+    "Enter Your Password",
 )
 
 
@@ -313,10 +317,39 @@ class EpicAuthorization:
                 "verify you are human",
                 "i am human",
                 "please drag the piece",
+                "please drag the icon",
+                "drag the shape to the place",
                 "tap everything",
                 "matching half",
             )
         )
+
+    async def _has_blocking_talon_overlay(self) -> bool:
+        overlay = self.page.locator("[id^='talon_container']")
+        with suppress(Exception):
+            count = await overlay.count()
+            for index in range(count):
+                candidate = overlay.nth(index)
+                if not await candidate.is_visible():
+                    continue
+                box = await candidate.bounding_box()
+                if box and box["width"] >= 80 and box["height"] >= 80:
+                    return True
+        return False
+
+    async def _is_social_login_control(self, locator: Locator) -> bool:
+        with suppress(Exception):
+            element_id = (await locator.get_attribute("id") or "").lower()
+            if element_id.startswith("login-with-"):
+                return True
+            text = " ".join((await locator.inner_text() or "").split()).lower()
+            if text.startswith("sign in with ") or "apple" in text or "google" in text:
+                return True
+        return False
+
+    def _is_pointer_intercept_error(self, err: Exception) -> bool:
+        text = str(err).lower()
+        return "intercepts pointer events" in text or "talon_container" in text
 
     async def _solve_visible_hcaptcha(
         self, agent: AgentV, *, reason: str, max_attempts: int = 3
@@ -358,7 +391,9 @@ class EpicAuthorization:
             )
         return not still_visible
 
-    async def _first_visible_locator(self, selectors: tuple[str, ...]) -> Locator | None:
+    async def _first_visible_locator(
+        self, selectors: tuple[str, ...], *, reject_social: bool = False
+    ) -> Locator | None:
         """Return the first visible locator. Never pass timeout to is_visible().
 
         Playwright 1.53 / Camoufox raises TypeError on Locator.is_visible(timeout=...),
@@ -367,23 +402,39 @@ class EpicAuthorization:
         for selector in selectors:
             locator = self.page.locator(selector).first
             try:
-                if await locator.is_visible():
-                    return locator
+                if not await locator.is_visible():
+                    continue
+                if reject_social and await self._is_social_login_control(locator):
+                    continue
+                return locator
             except Exception:
                 continue
         return None
+
+    async def _password_step_visible(self) -> bool:
+        for marker in PASSWORD_STEP_MARKERS:
+            locator = self.page.get_by_text(marker, exact=False).first
+            with suppress(Exception):
+                if await locator.is_visible():
+                    return True
+        return False
 
     async def _wait_for_password_form(self, agent: AgentV, timeout_ms: int = 30000) -> Locator:
         """Wait for the password field, solving any captcha that appears after Continue."""
         deadline = time.monotonic() + timeout_ms / 1000
 
         while time.monotonic() < deadline:
-            password_input = await self._first_visible_locator(PASSWORD_INPUT_SELECTORS)
-            if password_input is not None:
-                return password_input
+            if await self._password_step_visible():
+                password_input = await self._first_visible_locator(PASSWORD_INPUT_SELECTORS)
+                if password_input is not None:
+                    return password_input
 
             if await self._has_visible_hcaptcha():
                 await self._solve_visible_hcaptcha(agent, reason="waiting for password form")
+                continue
+
+            if await self._has_blocking_talon_overlay():
+                await self.page.wait_for_timeout(400)
                 continue
 
             await self.page.wait_for_timeout(400)
@@ -416,36 +467,44 @@ class EpicAuthorization:
                     return
                 continue
 
-            for candidate in selectors:
-                locator = self.page.locator(candidate).first
-                try:
-                    await expect(locator).to_be_visible(timeout=1500)
-                    await expect(locator).to_be_enabled(timeout=1500)
-                    await locator.click(timeout=5000)
-                    await self.page.wait_for_timeout(500)
-
-                    # Click may itself open a challenge before the form advances.
-                    if await self._has_visible_hcaptcha():
-                        await self._solve_visible_hcaptcha(agent, reason=f"after {step_name}")
-                    return
-                except Exception as err:
-                    last_error = err
-
-            if await self._has_visible_hcaptcha():
-                await self._solve_visible_hcaptcha(
-                    agent, reason=f"during {step_name} click failure"
-                )
+            if await self._has_blocking_talon_overlay():
+                await self.page.wait_for_timeout(400)
                 continue
-            await self.page.wait_for_timeout(400)
+
+            locator = await self._first_visible_locator(
+                selectors, reject_social=is_sign_in_step
+            )
+            if locator is None:
+                await self.page.wait_for_timeout(400)
+                continue
+
+            try:
+                await expect(locator).to_be_enabled(timeout=1500)
+                await locator.click(timeout=5000)
+                await self.page.wait_for_timeout(500)
+
+                # Click may itself open a challenge before the form advances.
+                if await self._has_visible_hcaptcha():
+                    await self._solve_visible_hcaptcha(agent, reason=f"after {step_name}")
+                return
+            except Exception as err:
+                last_error = err
+                if self._is_pointer_intercept_error(err) or await self._has_visible_hcaptcha():
+                    await self._solve_visible_hcaptcha(
+                        agent, reason=f"during {step_name} click failure"
+                    )
+                    continue
+                await self.page.wait_for_timeout(400)
 
         if await self._has_visible_hcaptcha():
             await self._solve_visible_hcaptcha(
                 agent, reason=f"final attempt before {step_name}", max_attempts=2
             )
-            for candidate in selectors:
-                with suppress(Exception):
-                    await self.page.locator(candidate).first.click(timeout=5000)
-                    return
+        locator = await self._first_visible_locator(selectors, reject_social=is_sign_in_step)
+        if locator is not None:
+            with suppress(Exception):
+                await locator.click(timeout=5000)
+                return
 
         if last_error is not None:
             raise last_error
@@ -735,7 +794,9 @@ class EpicAuthorization:
             sign_in_button = None
             while time.monotonic() < deadline:
                 password_input = await self._first_visible_locator(PASSWORD_INPUT_SELECTORS)
-                sign_in_button = await self._first_visible_locator(SIGN_IN_CONTROL_SELECTORS)
+                sign_in_button = await self._first_visible_locator(
+                    SIGN_IN_CONTROL_SELECTORS, reject_social=True
+                )
                 if password_input is not None and sign_in_button is not None:
                     break
                 await self.page.wait_for_timeout(200)
@@ -772,7 +833,9 @@ class EpicAuthorization:
             return
 
         try:
-            sign_in_button = await self._first_visible_locator(SIGN_IN_CONTROL_SELECTORS)
+            sign_in_button = await self._first_visible_locator(
+                SIGN_IN_CONTROL_SELECTORS, reject_social=True
+            )
             target = sign_in_button or self.page.locator("#sign-in")
             await target.click(timeout=10000, no_wait_after=True)
         except PlaywrightTimeoutError:

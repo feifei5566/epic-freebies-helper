@@ -1429,3 +1429,22 @@
   - 增加 `#password` / `input[type=password]` 与 `#sign-in` / `Sign in` 按钮后备选择器。
   - 登录、MFA skip、登录态 Fallback、TOTP 提交路径一并去掉 `is_visible(timeout=...)`。
   - 按仓库规则未执行测试；使用 `py_compile` 与静态检查验证语法。
+
+### 登录后备选择器误点 Apple「Sign in」
+
+- 现象：
+  - GitHub Actions 运行 `31660649187` 在刚修复密码探测后又失败。
+  - 密码页已经出现且密码已填入（截图可见蓝色 `Sign in`），但日志最终是 `Locator.click` 点到 `#login-with-apple`。
+  - 点击被 `talon_container_email_exists_prod` / hCaptcha iframe 拦截，5 次认证都未提交密码。
+- 根因判断：
+  - 上一轮为了兼容无 `#sign-in` 的新 UI，加入了 `[role='button']:has-text('Sign In')`。`has-text` 是子串匹配，会命中 email 页仍留在 DOM 里的 `Sign in with Apple`。
+  - `_click_login_control` 在 `#sign-in` 被 captcha 挡住后会继续尝试后续选择器，于是改点 Apple，而不是等遮罩消失后再点真正的登录按钮。
+- 改动文件：
+  - `app/services/epic_authorization_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 登录按钮改为精确文本 `Sign in` / `#sign-in`，并排除 `login-with-*` 社交按钮。
+  - 密码步必须看到 `Enter your password` 才继续，避免在 email 页误判。
+  - 指针被 talon / hCaptcha 拦截时只求解验证码，不再回退到社交登录按钮。
+  - 可见 captcha 判定补上 `talon_container_*` 与本次拖动题文案。
+  - 按仓库规则未执行测试；使用 `py_compile` 做静态验证。
