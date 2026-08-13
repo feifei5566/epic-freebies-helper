@@ -187,7 +187,7 @@ class EpicAgent:
                 sign_in_locator = self.page.locator(
                     "//a[contains(@href, 'login') or contains(., 'Sign In') or contains(., 'Sign in')]"
                 ).first
-                if await sign_in_locator.is_visible(timeout=1000):
+                if await sign_in_locator.is_visible():
                     logger.debug("Fallback login check: Found visible Sign In button, returning false")
                     return "false"
             except Exception as e:

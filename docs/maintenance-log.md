@@ -1409,3 +1409,23 @@
   - checkout ready / purchase state 等待采用上游 `time.monotonic()` 截止时间，并在扫描前优先识别安全检查。
   - 保留 fork 的登录 Fallback、captcha-aware 登录与既有维护记录。
   - 按仓库规则未执行测试；使用冲突标记扫描做静态验证。
+
+### 登录已显示密码页却因 is_visible(timeout) 被误判超时
+
+- 现象：
+  - GitHub Actions 运行 `31351270257` 在 `Run Epic Awesome Gamer` 失败。
+  - 日志连续 5 次：`TimeoutError('Timed out waiting for Epic password form')`，最终 `Authentication failed, aborting this run`。
+  - 5 张失败截图都是已经渲染的 `Enter your password` 页，email 已提交、hCaptcha 也报 `Challenge success`。
+- 根因判断：
+  - `_wait_for_password_form` 用 `Locator.is_visible(timeout=500)` 探测 `#password`，外层 `suppress(Exception)` 会吞掉 Playwright 1.53 / Camoufox 的 `TypeError: Frame.is_visible() got an unexpected keyword argument 'timeout'`，把可见密码框当成不存在。
+  - 这是 2026-07-17 已在密码表单恢复路径修过的同一问题，8 月 captcha-aware 登录等待又把带 timeout 的 `is_visible` 写了回去。
+- 改动文件：
+  - `app/services/epic_authorization_service.py`
+  - `app/services/epic_games_service.py`
+  - `app/services/epic_totp_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 密码框等待改为无 timeout 的 `is_visible()`，并返回实际命中的 locator 再填密码。
+  - 增加 `#password` / `input[type=password]` 与 `#sign-in` / `Sign in` 按钮后备选择器。
+  - 登录、MFA skip、登录态 Fallback、TOTP 提交路径一并去掉 `is_visible(timeout=...)`。
+  - 按仓库规则未执行测试；使用 `py_compile` 与静态检查验证语法。
