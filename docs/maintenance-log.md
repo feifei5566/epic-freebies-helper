@@ -1285,4 +1285,127 @@
   - 登录后挑战循环采用上游 `wait_for_challenge_signal`；README 保留 Gemini 优先说明，同时补上 TOTP / Telegram / 代理文档。
   - 按仓库规则未执行测试；使用 `py_compile` 与冲突标记扫描做静态验证。
 
+### 2026-08-08 取消仓库自更新 Star 趋势图
 
+- 现象：
+  - Star 趋势图依赖每日 GitHub Action 生成并提交 SVG，持续制造与业务无关的提交；Fork 用户也会继承这套更新工作流。
+- 根因判断：
+  - 仓库内生成方案把展示数据维护耦合到代码仓库写权限；Star History 当前 `/svg` 接口可直接提供带 CDN 缓存的动态明暗主题图，无需仓库自行更新。
+- 改动文件：
+  - `.github/workflows/update-star-history.yml`（删除）
+  - `scripts/generate_star_history.py`（删除）
+  - `docs/images/star-history-light.svg`（删除）
+  - `docs/images/star-history-dark.svg`（删除）
+  - `README.md`
+  - `README.en.md`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 中英文 README 直接引用 Star History 托管的动态 SVG，并保留明暗主题适配。
+  - 仓库和 Fork 不再包含 Star 图定时任务，不需要 `contents: write` 权限，也不会再产生 `chore: update star history chart` 提交。
+  - Star 趋势展示改为第三方可用性依赖；即使外链暂时不可用，也不会影响领取工作流或修改仓库内容。
+
+### 2026-08-08 修复 checkout 容器等待放大至任务超时
+
+- 现象：
+  - Actions run `31149757724` 在成功打开 Beacon Pines checkout 并多次处理 hCaptcha 后，持续输出 `Primary buttons not found in checkout containers`，最终在 60 分钟 job timeout 时被取消，后续周免未处理。
+- 根因判断：
+  - checkout 等待循环使用手工累加的固定步长统计耗时，但一次容器扫描会按 frame、按钮和 locator timeout 串行放大；日志中标称 1 秒的轮询实际可耗时约 60–90 秒。
+  - `_observe_checkout_outcome()` 在没有发现领取成功、安全检查或 checkout 按钮时仍固定返回 `checkout`，把空白/失效弹窗误判为可继续提交。
+  - 四轮即时结账按状态机循环次数计数，单纯恢复 hCaptcha 的轮次也会消耗一次提交机会；本次实际只提交两次便进入漫长核验。
+- 改动文件：
+  - `app/services/epic_games_service.py`
+  - `tests/test_checkout_state_machine.py`
+  - `tests/test_helper_env_generator.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 容器扫描、checkout ready、购买状态和提交结果观察统一改用 `time.monotonic()` 的真实截止时间；单次扫描共享总预算，不再按 frame 倍增。
+  - 没有发现有效 checkout 容器时返回 `pending`，并以最后一次扫描状态为准；hCaptcha 消失后必须恢复到 `claimed` 或 `checkout` 才视为成功，空白弹窗会进入有界最终核验。
+  - 仅实际点击 `Add to library` / `Place order` 时增加提交计数，安全检查恢复不再吞掉四次提交额度。
+  - 单商品即时 checkout 增加 15 分钟总时间盒，最终核验中的 checkout 恢复每次限制为 2 分钟，避免单个商品占满 60 分钟任务。
+  - 新增容器总预算、pending 判定及安全检查/提交计数回归测试。
+  - env generator 测试改在 pytest 临时目录输出并增加断言，完整测试不再污染仓库的 `docker/` 目录。
+
+### 2026-08-08 修复可见 Add to library 按钮未被 checkout 扫描命中
+
+- 现象：
+  - Actions run `31257535606` 的失败截图中 checkout 弹窗及 `Add to library` 按钮已经可见，但程序仍连续报告 `Primary buttons not found in checkout containers`，最终核验失败。
+  - 上一轮修复仅通过状态机单元测试，没有使用本地真实账号完成端到端领取验证。
+- 根因判断：
+  - 本地 Camoufox 探针确认真实 purchase frame 中提交按钮的复合选择器、大小写不敏感正则和标题文本定位都返回一个元素，DOM 和选择器本身并未缺失。
+  - 当前 Playwright 1.53 的 `Locator.is_visible(timeout=...)` 会把已声明为忽略的 `timeout` 参数继续传给不接受该参数的 `Frame.is_visible()`，实际抛出 `TypeError`；结账容器扫描的宽泛异常处理吞掉该错误后，将“按钮可见但可见性检查异常”误报成“按钮不存在”。
+  - 早期后备定位同时使用区分大小写的精确文本匹配和全大写常量，无法命中页面实际的 `Add to library` 文本；失败工件又会在任一 frame 读取异常时遗漏整个 frame，掩盖了上述证据。
+- 改动文件：
+  - `app/services/epic_games_service.py`
+  - `tests/test_checkout_state_machine.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 直接把 `webPurchaseContainer` 的 `FrameLocator` 放在扫描首位，再使用 URL 和文本启发式作为回退，避免不必要的 frame handle 转换。
+  - 在读取 frame body 前先扫描可见提交控件，并以大小写不敏感的精确 `Add to library` / `Place order` 正则作为后备入口后向上寻找可点击祖先；移除 Epic 领取路径中传给 `Locator.is_visible()` 的无效 timeout 参数。
+  - 失败工件逐 frame 记录去除查询参数后的 URL、可见操作控件和探测异常；单个 frame 失败不再导致该 frame 从报告中消失。
+  - 本地真实 Camoufox 流程已从持续报告按钮不存在恢复为命中 `ADD TO LIBRARY` 并执行提交；实际领取被账号 24 小时免费游戏限流阻断，未将其误报为领取成功。
+  - 增加 hCaptcha frame 共存、标题大小写文本和 Playwright 无参数可见性调用的回归覆盖。
+
+### 2026-08-08 识别 Epic 账号 24 小时免费游戏领取限流并快速终止
+
+- 现象：
+  - 本地真实 checkout 点击 `Add to library` 后同时出现 hCaptcha 和提示 `Your account is unable to download any more free games ... please wait 24 hours`，程序仍进入挑战求解及重复提交。
+- 根因判断：
+  - 该提示是 Epic 对账号施加的免费游戏领取限流，继续求解 hCaptcha、重试按钮或最终核验都无法完成本次领取。
+  - 现有状态机只有 `claimed`、`security`、`checkout` 和 `pending` 状态，没有账号级不可恢复终止状态，因此把限流场景当作可恢复安全检查。
+- 改动文件：
+  - `app/services/epic_games_service.py`
+  - `tests/test_checkout_state_machine.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 仅在完整匹配“无法继续领取免费游戏”和“等待 24 小时”两段固定文案时判定账号限流，避免普通错误误判。
+  - 在购买状态等待、提交后观察和 hCaptcha 求解前优先检查限流，并通过专用异常穿透 checkout fallback，立即终止本次任务且保留调试截图。
+  - 限流不会被标记为领取成功，也不会继续消耗挑战 API、提交次数或任务总时长。
+
+### 2026-08-08 修正 GitHub Actions 失败后的最终领取结论
+
+- 现象：
+  - 领取进程因 Epic 24 小时账号限流退出后，工作流只有 `if: success()` 的成功摘要，没有在 Actions 最终摘要中明确说明本次未领取成功。
+- 根因判断：
+  - Python 进程和 Telegram 已把限流作为失败处理，但 GitHub Actions 缺少对应的 `if: failure()` Step Summary，用户只能从长错误堆栈中判断最终结果。
+- 改动文件：
+  - `.github/workflows/epic-gamer.yml`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 工作流失败后检查本次日志和 runtime 工件；命中 Epic 限流固定文案时，明确显示受影响账号未确认领取成功并建议至少等待 24 小时。
+  - 其他失败显示通用“领取未完成”摘要并引导查看失败步骤和上传工件；成功摘要仍只在任务成功时执行。
+
+### 2026-08-08 将 Epic 24 小时封控改为绿色终止分支
+
+- 现象：
+  - 账号已明确进入 Epic 24 小时免费游戏领取封控后，继续运行验证码没有意义；上一版虽然会停止验证码和重试，但仍让 Action 以红色失败结束。
+- 根因判断：
+  - 封控不是程序故障，而是当前账号暂时不可领取的预期业务终止状态；专用限流异常尚未在部署编排层转换为正常终止结果。
+  - 直接把所有领取异常改成绿色会掩盖真实故障，因此只能特殊处理 `EpicFreeGameRateLimitError` 及其被通知汇总异常包装后的 cause 链。
+- 改动文件：
+  - `app/deploy.py`
+  - `app/services/epic_collection_summary_service.py`
+  - `.github/workflows/epic-gamer.yml`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 单账户检测到 24 小时封控后立即结束浏览器流程、不再重试，并由部署层转换为正常返回，使 Action 保持绿色；其他异常仍抛出并保持红色。
+  - 启用 Telegram 时直接生成“未确认领取”的限流通知摘要，不再执行封控后的订单历史核验，随后立即关闭浏览器。
+  - 多账户中的封控账号单独计为 `rate-limited`，不计入领取成功，也不阻断其他账号；只有真实失败账号才让整个 Action 失败。
+  - 绿色 Action 的最终摘要会优先识别限流日志并显示“正常结束但本次领取未成功”，不会进入普通成功领取提示。
+
+## 2026-08-13
+
+### 同步上游 master（落后 8 commit）
+
+- 现象：
+  - fork `master` 相对 `upstream/master` 落后 8 个 commit，本地另有登录 captcha 修复、登录态 Fallback、Gemini 优先等独有改动。
+- 根因判断：
+  - 上游在 2026-08-08 修了 checkout 等待计时、即时结账误判、24 小时限流绿色终止，以及取消 star-history 自更新；两边在 `epic_games_service.py` 与 maintenance log 上产生冲突。
+- 改动文件：
+  - `app/services/epic_games_service.py`（冲突解决）
+  - `docs/maintenance-log.md`
+  - 以及上游自动合并的 workflow / README / deploy / 限流摘要等文件
+- 处理结果：
+  - 合并 `upstream/master`。
+  - checkout ready / purchase state 等待采用上游 `time.monotonic()` 截止时间，并在扫描前优先识别安全检查。
+  - 保留 fork 的登录 Fallback、captcha-aware 登录与既有维护记录。
+  - 按仓库规则未执行测试；使用冲突标记扫描做静态验证。
