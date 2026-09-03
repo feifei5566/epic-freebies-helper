@@ -156,6 +156,9 @@ async def _install_hsw_identity_route(context: BrowserContext) -> None:
 
 @asynccontextmanager
 async def open_browser_context(headless: bool | str) -> AsyncIterator[BrowserContext]:
+    from extensions.playwright_patch import apply_playwright_driver_patch
+
+    apply_playwright_driver_patch()
     backend = (settings.BROWSER_BACKEND or "auto").strip().lower()
     headless = resolve_headless_mode(headless)
     proxy = _browser_proxy_options()

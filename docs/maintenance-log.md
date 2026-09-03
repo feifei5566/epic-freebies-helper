@@ -1542,3 +1542,29 @@
   - `EpicSettings` 中显式设置 `EXECUTION_TIMEOUT: float = 240.0`，为多轮 AI 视觉推理预留充足时间。
   - `_build_drag_prompt` 优雅处理 `source_points` 为空场景，指导模型寻找 `+ Move` 控制点；拖拽过程增加 `mouse.up()` 的 `finally` 释放保障；submit 按钮点击放宽异常捕获。
   - 按仓库规则未执行测试；使用 `python3 -m py_compile` 静态编译验证语法。
+
+### 2026-09-03 修复 Playwright Firefox 帧清理崩潰與登入後未捕獲截圖異常
+
+- 现象：
+  - GitHub Actions 运行 `33711799366` 在两轮 `image_drag_single` 验证码均成功破解（`Login success`）后，在后续跳转步骤突发崩溃退出。
+  - 日志中伴随 Playwright Node.js 驱动致命错误：`TypeError: Cannot read properties of undefined (reading 'childFrames') at FrameManager.removeChildFramesRecursively (frames.js:262:31)`，导致 `Connection closed while reading from the driver`。
+  - 随后在 `_login` 异常捕获中，`self.page.screenshot` 再次因连接关闭抛出异常，脱离重试逻辑直接崩溃终结。
+- 根因判断：
+  - Playwright Firefox 驱动在页面导航卸载旧页面时，若存在刚被销毁或尚未完全解绑的子 iframe（如登录时的 hCaptcha/talon iframes），`frameCommittedNewDocumentNavigation` 获取到的 `frame` 可能为 `undefined`。Node 端的 `removeChildFramesRecursively(frame)` 未做防御性判断直接调用 `frame.childFrames()`，造成 Node.js 驱动进程崩溃。
+  - `_handle_right_account_validation` 在登录成功后毫秒级立即使用 `wait_until="networkidle"` 强行跳转 `account/personal`，加剧了 Firefox iframe 卸载的竞态碰撞。
+  - `_login` 中发生异常时，第 1099 行的 `await self.page.screenshot(...)` 未使用 `with suppress(Exception):` 包裹，当驱动断开时引发二度异常并逃逸出 `invoke` 循环。
+- 改动文件：
+  - `app/extensions/playwright_patch.py`
+  - `app/deploy.py`
+  - `app/services/browser_context.py`
+  - `app/services/epic_authorization_service.py`
+  - `app/services/epic_games_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 新增 `playwright_patch.py`，在启动时动态为 Playwright Node.js 驱动的 `frames.js` 注入防御性空值校验（`if (!frame) return;`），彻底杜绝 `removeChildFramesRecursively` 的未捕获崩溃。
+  - 在 `deploy.py` 和 `browser_context.py` 启动阶段引入并自动应用该驱动补丁。
+  - `_handle_right_account_validation` 在跳转前加入 1 秒等待让旧 iframe 平稳卸载，并将导航模式调整为更稳健的 `domcontentloaded`。
+  - `_login` 中将 `_handle_right_account_validation` 调用包裹在非致命捕获中，即使非核心的提示探测发生抖动，也允许流程顺利推进到真正的商店会话校验。
+  - `_login` 与 `_capture_purchase_debug` 中的页面截圖均加入 `with suppress(Exception):` 保护，防止驱动异常时二次报错逃逸。
+  - 按仓库规则未执行测试；使用 `python3 -m py_compile` 静态编译验证语法。
+

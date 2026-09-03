@@ -756,7 +756,8 @@ class EpicGames:
         target = RUNTIME_DIR.joinpath("purchase_debug")
         target.mkdir(parents=True, exist_ok=True)
         safe_reason = reason.lower().replace(" ", "_")
-        await page.screenshot(path=target.joinpath(f"{safe_reason}-{stamp}.png"), full_page=True)
+        with suppress(Exception):
+            await page.screenshot(path=target.joinpath(f"{safe_reason}-{stamp}.png"), full_page=True)
         with suppress(Exception):
             page_text = await page.locator("body").text_content()
             frame_texts = []

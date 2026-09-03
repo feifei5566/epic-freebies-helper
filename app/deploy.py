@@ -31,6 +31,7 @@ from services.telegram_notification_service import (
     send_collection_summary_to_telegram,
     telegram_notifications_enabled,
 )
+from extensions.playwright_patch import apply_playwright_driver_patch
 from settings import LOG_DIR
 from settings import settings
 from utils import init_log
@@ -41,6 +42,7 @@ init_log(
     error=LOG_DIR.joinpath("error.log"),
     serialize=LOG_DIR.joinpath("serialize.log"),
 )
+apply_playwright_driver_patch()
 
 # Default timezone for scheduling operations
 TIMEZONE = timezone("Asia/Shanghai")

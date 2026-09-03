@@ -134,7 +134,18 @@ class EpicAuthorization:
         Returns:
 
         """
-        await self.page.goto("https://www.epicgames.com/account/personal", wait_until="networkidle")
+        await self.page.wait_for_timeout(1000)
+        try:
+            await self.page.goto(
+                "https://www.epicgames.com/account/personal",
+                wait_until="domcontentloaded",
+                timeout=15000,
+            )
+        except Exception as err:
+            logger.warning(
+                f"Navigation to account personal page encountered non-fatal error: {err!r}"
+            )
+            return
 
         btn_ids = ["#link-success", "#login-reminder-prompt-setup-tfa-skip", "#yes"]
 
@@ -1084,8 +1095,23 @@ class EpicAuthorization:
             ):
                 raise EpicManualActionRequiredError(self._mfa_setup_prompt_message(self.page.url))
 
-            await asyncio.wait_for(self._handle_right_account_validation(), timeout=60)
-            logger.success("Right account validation success")
+            try:
+                await asyncio.wait_for(self._handle_right_account_validation(), timeout=30)
+                logger.success("Right account validation success")
+            except Exception as err:
+                if isinstance(
+                    err,
+                    (
+                        EpicManualActionRequiredError,
+                        EpicAuthenticationFatalError,
+                        EpicLlmQuotaExhaustedError,
+                    ),
+                ):
+                    raise
+                logger.warning(
+                    f"Right account validation probe skipped or encountered non-fatal error: {err!r}"
+                )
+
             await self._goto_claim_page()
             await self._ensure_store_session_ready()
             logger.success("Epic store session verification success")
@@ -1096,7 +1122,8 @@ class EpicAuthorization:
             sr.mkdir(parents=True, exist_ok=True)
             with suppress(Exception):
                 await redact_totp_inputs(self.page)
-            await self.page.screenshot(path=sr.joinpath(f"login-{int(time.time())}.png"))
+            with suppress(Exception):
+                await self.page.screenshot(path=sr.joinpath(f"login-{int(time.time())}.png"))
             if isinstance(err, EpicAuthenticationFatalError):
                 logger.error(
                     "Epic account requires two-factor authentication. Configure EPIC_TOTP_SECRET "
