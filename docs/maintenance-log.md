@@ -1469,3 +1469,31 @@
   - 识别 Gemini 免费档日额度耗尽后立即终止认证，不再空转剩余轮次。
   - 按仓库规则未执行测试；使用 `py_compile` 做静态验证。
   - 本次未再触发 Actions：当前 API key 的免费日额度已用尽，立刻重跑仍会 429。
+
+### 2026-09-03 修复结账点击超时、hCaptcha 超时误判为成功及验证码帧漏检
+
+- 现象：
+  - GitHub Actions 运行 `33368418154` 领取周免游戏（`Breathedge` 与 `Rival Stars Horse Racing`）失败，最终报 `Failed to confirm claim flow for promotions`。
+  - 在即时结账阶段，`_submit_place_order` 的 standard / force 点击连续出现 `Locator.click: Timeout 5000ms exceeded`。
+  - 随后触发结账安全验证，hCaptcha 挑战连续 4 轮报 `Challenge execution timed out`（120 秒超时）。
+  - 但日志在每次超时的几秒后，错误输出 `Checkout security check solved into checkout`，误判安全检查已解决，导致外层重复点击提交 4 轮并耗尽配额。
+- 根因判断：
+  - `_submit_place_order` 中的 standard 和 force 按钮点击缺少 `no_wait_after=True`；点击 `Add to library` / `Place Order` 触发 Epic 遮罩或异步结账响应时，Playwright 会卡在等待页面 idle 导致 5000ms 硬超时。
+  - `_resolve_checkout_security_check` 存在假阳性（False Positive）判定：当 `challenge_signal` 为 `EXECUTION_TIMEOUT` 失败时，代码没有直接判定失败，而是继续观察 outcome；因底层结账弹窗仍存在（`outcome == "checkout"`），代码将其误当成「已解开并回到结账页」，返回 `True`。
+  - `_is_checkout_security_check_visible` 漏检了 hCaptcha iframe 的关键文本（包含 `"Drag the shape that fits the outline"`、`"Skip"`、`"Please try again"`），且 `purchase_frame_markers` 仅检查 Frame 1 而未覆盖 Frame 2 子帧，导致活跃的验证码帧未被识别。
+  - `EXECUTION_TIMEOUT` 预设仅 120 秒；对于需要 2 轮 Gemini reasoning（每轮约 50 秒）的题目，加上类型推断与前置渲染，总耗时极易超出 120 秒而被强制中断。
+  - 拖拽提示在 `source_points` 为空时输出了 `[]` 误导模型；拖拽过程缺少 `mouse.up()` 的 `finally` 保证，点击 submit 按钮仅捕获 `PlaywrightTimeoutError` 而未捕获 `click_by_mouse` 的 `ValueError`。
+- 改动文件：
+  - `app/settings.py`
+  - `app/extensions/hcaptcha_adapter.py`
+  - `app/services/epic_games_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - `_submit_place_order` 中的 standard / force 点击添加 `no_wait_after=True`，避免按钮点击卡在后置等待。
+  - `_resolve_checkout_security_check` 严密校验：仅在 `challenge_signal is ChallengeSignal.SUCCESS` 时才允许通过 `outcome in {"claimed", "checkout"}` 判定成功；若挑战失败且安全检查仍可见则继续循环重试，安全检查消失但未成功则记录告警并返回 `False`，彻底消除假阳性循环。
+  - 每次解题尝试后清理 `AgentV` 队列残余，避免脏状态污染后续重试。
+  - `_is_checkout_security_check_visible` 扩充 `"DRAG THE SHAPE THAT FITS THE OUTLINE"`、`"SKIP"`、`"PLEASE TRY AGAIN"` 等标记，并在所有可见子帧中完整检测；`_visible_hcaptcha_frame_urls` 补充 `frame_element.is_visible()` 检测。
+  - `EpicSettings` 中显式设置 `EXECUTION_TIMEOUT: float = 240.0`，为多轮 AI 视觉推理预留充足时间。
+  - `_build_drag_prompt` 优雅处理 `source_points` 为空场景，指导模型寻找 `+ Move` 控制点；拖拽过程增加 `mouse.up()` 的 `finally` 释放保障；submit 按钮点击放宽异常捕获。
+  - 按仓库规则未执行测试；使用 `python3 -m py_compile` 静态编译验证语法。
+

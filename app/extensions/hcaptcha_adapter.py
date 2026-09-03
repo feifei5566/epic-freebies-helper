@@ -452,10 +452,16 @@ async def _resolve_outline_paths(
 
 
 def _build_drag_prompt(user_prompt: str, *, source_points: list[tuple[int, int]]) -> str:
-    details = (
-        f"Authoritative draggable centers from the challenge payload: {source_points}. "
-        "Use these exact start_point values and reason only about each end_point."
-    )
+    if source_points:
+        details = (
+            f"Authoritative draggable centers from the challenge payload: {source_points}. "
+            "Use these exact start_point values and reason only about each end_point."
+        )
+    else:
+        details = (
+            "Identify each draggable shape on the right and start dragging from its '+ Move' button or center. "
+            "Drag it to the corresponding matching outline on the left."
+        )
     if _is_line_completion_question(user_prompt):
         details += (
             " For numbered line completion, locate fixed segments 3 and 5 and the two exposed "
@@ -581,9 +587,13 @@ def apply_hcaptcha_drag_patch() -> None:
                 )
 
             for path in paths:
-                await self._perform_drag_drop(path)
+                try:
+                    await self._perform_drag_drop(path)
+                finally:
+                    with suppress(Exception):
+                        await self.page.mouse.up()
 
-            with suppress(PlaywrightTimeoutError):
+            with suppress(Exception):
                 submit_btn = frame_challenge.locator("//div[@class='button-submit button']")
                 await self.click_by_mouse(submit_btn)
 

@@ -468,6 +468,10 @@ class EpicGames:
 
             with suppress(Exception):
                 frame_element = await frame.frame_element()
+                if frame_element and await frame_element.is_visible():
+                    urls.append(frame.url)
+                    continue
+
                 frame_box = await frame_element.evaluate(
                     """
                     (element) => {
@@ -1304,12 +1308,20 @@ class EpicGames:
         page_markers = [
             "ONE MORE STEP",
             "PLEASE COMPLETE A SECURITY CHECK TO CONTINUE",
+            "PLEASE COMPLETE A SECURITY CHECK",
             "PLEASE DRAG THE ICON ON THE BOTTOM TO THE PLACE WHERE IT FITS",
             "PLEASE DRAG THE ICON ON THE LEFT TO THE PLACE WHERE IT FITS",
+            "DRAG THE SHAPE THAT FITS THE OUTLINE",
+            "DRAG THE SHAPE TO THE PLACE",
+            "DRAG THE SHAPE",
+            "PLEASE DRAG THE PIECE",
+            "PLEASE DRAG THE ICON",
             "VERIFY THAT YOU ARE HUMAN",
             "VERIFY YOU ARE HUMAN",
+            "TAP EVERYTHING",
+            "MATCHING HALF",
         ]
-        purchase_frame_markers = [*page_markers, "I AM HUMAN", "SKIP"]
+        purchase_frame_markers = [*page_markers, "I AM HUMAN", "SKIP", "PLEASE TRY AGAIN"]
         purchase_frame_marker_pairs = [("PLEASE TRY AGAIN", "VERIFY")]
 
         visible_locators = [
@@ -1343,7 +1355,7 @@ class EpicGames:
         # Scan only visible frames (hidden hCaptcha containers are filtered in _frame_texts)
         for frame_text in await EpicGames._frame_texts(page, timeout=300):
             normalized = " ".join(frame_text.upper().split())
-            if any(marker in normalized for marker in page_markers):
+            if any(marker in normalized for marker in purchase_frame_markers):
                 return True
             if "I AM HUMAN" in normalized or any(
                 all(marker in normalized for marker in markers)
@@ -1403,6 +1415,7 @@ class EpicGames:
 
             await page.wait_for_timeout(2500)
 
+            challenge_signal: ChallengeSignal | None = None
             try:
                 remaining_seconds = max(1.0, max_wait_ms / 1000 - (time.monotonic() - started_at))
                 challenge_signal = await wait_for_challenge_signal(
@@ -1429,6 +1442,14 @@ class EpicGames:
                         page, f"checkout_security_check_failed_{attempt}", url
                     )
 
+            # Drain agent queues to ensure clean state for retry
+            with suppress(Exception):
+                while not agent._captcha_response_queue.empty():
+                    agent._captcha_response_queue.get_nowait()
+                while not agent._captcha_payload_queue.empty():
+                    agent._captcha_payload_queue.get_nowait()
+                agent._captcha_payload = None
+
             await page.wait_for_timeout(1500)
 
             if await self._is_claimed_state(page, url):
@@ -1437,6 +1458,24 @@ class EpicGames:
                 )
                 return True
 
+            if challenge_signal is ChallengeSignal.SUCCESS:
+                if not await self._is_checkout_security_check_visible(page):
+                    outcome = await self._observe_checkout_outcome(
+                        page,
+                        url,
+                        timeout_ms=min(
+                            10000, max(0, int(max_wait_ms - (time.monotonic() - started_at) * 1000))
+                        ),
+                    )
+                    if outcome in {"claimed", "checkout"}:
+                        logger.success("Checkout security check solved into {} - {}", outcome, url)
+                        return True
+                    logger.warning(
+                        "Checkout security check cleared into an indeterminate state - {}", url
+                    )
+                    return False
+
+            # If the security check disappeared without ChallengeSignal.SUCCESS
             if not await self._is_checkout_security_check_visible(page):
                 outcome = await self._observe_checkout_outcome(
                     page,
@@ -1445,24 +1484,23 @@ class EpicGames:
                         10000, max(0, int(max_wait_ms - (time.monotonic() - started_at) * 1000))
                     ),
                 )
-                if outcome in {"claimed", "checkout"}:
-                    logger.success("Checkout security check solved into {} - {}", outcome, url)
+                if outcome == "claimed":
+                    logger.success("Checkout confirmed claim state after security check - {}", url)
                     return True
                 logger.warning(
-                    "Checkout security check cleared into an indeterminate state - {}", url
+                    "Checkout security check disappeared without successful solve | signal={} | outcome={} | url={}",
+                    getattr(challenge_signal, "value", None),
+                    outcome,
+                    url,
                 )
                 return False
 
-            outcome = await self._observe_checkout_outcome(page, url, timeout_ms=10000)
-            logger.debug(
-                f"Checkout security check follow-up outcome after attempt {attempt}: {outcome} | {url=}"
+            logger.warning(
+                "Checkout security check remains visible after attempt {} | signal={} | url={}",
+                attempt,
+                getattr(challenge_signal, "value", None),
+                url,
             )
-            if outcome == "claimed":
-                logger.success(f"Checkout security check resolved into claimed state - {url=}")
-                return True
-            if outcome == "checkout":
-                logger.success(f"Checkout security check cleared back to checkout - {url=}")
-                return True
 
         logger.warning(f"Checkout security check remained visible after timeout - {url=}")
         await self._capture_purchase_debug(page, "checkout_security_check_unresolved", url)
@@ -1666,8 +1704,8 @@ class EpicGames:
             return payment_btn
 
         click_attempts = (
-            ("standard", lambda btn: btn.click(timeout=5000)),
-            ("force", lambda btn: btn.click(force=True, timeout=5000)),
+            ("standard", lambda btn: btn.click(timeout=5000, no_wait_after=True)),
+            ("force", lambda btn: btn.click(force=True, timeout=5000, no_wait_after=True)),
             ("dispatch", lambda btn: btn.dispatch_event("click", timeout=5000)),
             ("dom", lambda btn: btn.evaluate("(button) => button.click()", timeout=5000)),
             ("keyboard", lambda btn: btn.press("Enter", timeout=2000)),
