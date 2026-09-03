@@ -81,8 +81,24 @@ GLM_COMPLEX_DRAG_INSTRUCTION = (
 GLM_MULTI_TARGET_INSTRUCTION = (
     "For multi-target selection challenges, inspect every candidate and return every matching "
     "target, not only the first one. Use the center of each selected object and preserve a "
-    "stable visual reading order."
+    "stable visual reading order. For count-based animal tasks, first locate the narrow reference "
+    "strip containing example animals and repeated numeric count badges. The reference strip can "
+    "appear on either side and is not clickable. Select only matching tiles in the separate grid, "
+    "never the reference animals, badges, header, or margins, and return exactly the requested "
+    "count for each example. Check every point against the minimum and maximum coordinates printed "
+    "on the projection before answering."
 )
+
+
+def _glm_thinking_payload(model: str, config: Any) -> dict[str, str] | None:
+    """Keep GLM point-selection calls within hCaptcha response budgets."""
+    if not model.lower().startswith("glm-4.5"):
+        return None
+    if getattr(config, "thinking_config", None) is None:
+        return None
+    if "points" in _schema_field_names(getattr(config, "response_schema", None)):
+        return {"type": "disabled"}
+    return {"type": "enabled"}
 
 
 def _ensure_list(value: Any) -> list[Any]:
@@ -862,6 +878,8 @@ def _coerce_payload_for_schema(payload: dict[str, Any], schema: Any, text: str) 
         if normalized_drag:
             return normalized_drag
 
+        raise ValueError("GLM drag response does not contain valid coordinate pairs")
+
     if "points" in fields:
         area_payload = _build_area_select_payload(
             _extract_area_boxes_from_text(text),
@@ -1116,8 +1134,8 @@ class _GLMAsyncModels:
         if getattr(config, "response_schema", None) is not None:
             payload["response_format"] = {"type": "json_object"}
 
-        if getattr(config, "thinking_config", None) is not None and model.startswith("glm-4.5"):
-            payload["thinking"] = {"type": "enabled"}
+        if thinking_payload := _glm_thinking_payload(model, config):
+            payload["thinking"] = thinking_payload
 
         payload.update({k: v for k, v in kwargs.items() if k not in {"config"}})
         return payload
@@ -1223,7 +1241,13 @@ class _GLMAsyncModels:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(request_timeout, connect=min(30.0, request_timeout))
         ) as client:
-            response = await client.post(endpoint, headers=headers, json=payload)
+            try:
+                response = await client.post(endpoint, headers=headers, json=payload)
+            except httpx.TimeoutException as err:
+                raise TimeoutError(
+                    f"GLM request timed out after {request_timeout:g} seconds "
+                    f"({type(err).__name__})"
+                ) from err
             if response.is_error:
                 self._log_glm_error(response)
                 response.raise_for_status()
@@ -1246,6 +1270,20 @@ class GLMCompatibleGenAIClient:
 
         self._storage: dict[str, dict[str, Any]] = {}
         self.aio = _GLMAsyncNamespace(settings, self._storage)
+
+
+def _limit_glm_provider_attempts(max_attempts: int = 2) -> bool:
+    try:
+        from hcaptcha_challenger.tools.internal.providers.gemini import GeminiProvider
+        from tenacity import stop_after_attempt
+    except ImportError:
+        return False
+
+    retrying = getattr(GeminiProvider.generate_with_images, "retry", None)
+    if retrying is None:
+        return False
+    retrying.stop = stop_after_attempt(max_attempts)
+    return True
 
 
 def apply_gemini_patch(settings: Any):
@@ -1318,6 +1356,8 @@ def apply_glm_patch(settings: Any):
         from google import genai
 
         genai.Client = GLMCompatibleGenAIClient
+        if not _limit_glm_provider_attempts():
+            logger.warning("GLM provider retry budget could not be configured")
         logger.info(
             f"🚀 GLM 兼容补丁已应用 | 模型: {settings.GLM_MODEL} | 地址: {settings.GLM_BASE_URL}"
         )
