@@ -1568,3 +1568,94 @@
   - `_login` 与 `_capture_purchase_debug` 中的页面截圖均加入 `with suppress(Exception):` 保护，防止驱动异常时二次报错逃逸。
   - 按仓库规则未执行测试；使用 `python3 -m py_compile` 静态编译验证语法。
 
+### 2026-09-06 为 GitHub Issues 增加独立的功能建议入口
+
+- 现象：
+  - Issue #28 的微信通知功能建议使用了 Bug 表单，被要求填写 Actions 运行链接、Fork 可见性和复现步骤，并自动添加了 `bug` 标签。
+- 根因判断：
+  - 仓库仅提供中英文 Bug 表单，且关闭了空白 Issue，缺少专门用于新功能和改进建议的入口。
+- 改动文件：
+  - `.github/ISSUE_TEMPLATE/03-feature-request-zh.yml`
+  - `.github/ISSUE_TEMPLATE/04-feature-request-en.yml`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 新增中英文 Feature 表单，标题使用 `[Feature]` 前缀，并复用仓库已有的 `enhancement` 标签。
+  - 仅要求描述使用场景和期望功能；替代方案、配置兼容性与相关资料为可选项，不要求失败运行链接或复现步骤。
+  - 提醒提交者保护敏感信息，并考虑可选功能对现有单账号配置及领取流程的兼容性；原有 Bug 表单和程序运行逻辑保持不变。
+  - 表单需提交并推送到 GitHub 默认分支后，才会出现在新建 Issue 的模板选择页。
+  - YAML 解析、表单字段及必填项静态检查通过；遵守仓库约定，未执行测试或领取任务。
+
+### 2026-09-06 修复领取阶段 Firefox 失效 frame 导航导致的驱动崩溃
+
+- 现象：
+  - Actions run `33967879331` / job `101311091728` 在登录 hCaptcha 最终成功、Epic 商店会话验证完成后，领取 `Alone With You` 时失败。
+  - `Get` 点击出现 `Device not supported` 弹窗，处理 Continue 时，原始 job 日志中的 Playwright Node 驱动抛出 `TypeError: Cannot read properties of undefined (reading 'childFrames')`；随后 Python 报 `Connection closed while reading from the driver`。
+  - 错误处理中的截图也因驱动断连失败，最终异常变成 `Page.screenshot`，容易被误认为截图或验证码问题。
+- 根因判断：
+  - 此次运行使用 Playwright `1.53.0`、Camoufox Python 包 `0.4.11` 和动态下载的 Camoufox `152.0.4-beta.30`。Firefox 的导航提交事件引用了 frame 表中不存在的对象；Playwright 未做空值检查便访问 `childFrames()`，导致整个驱动退出。迟到的 iframe 导航事件可在本地安装的真实 Node 驱动代码中复现完全相同的堆栈。
+  - Python 层捕获连接异常无法恢复已退出的驱动，增加验证码重试也无法解决该崩溃。
+  - 另发现 `Get` 点击超时或设备弹窗关闭后未在下次点击前检查领取进度，可能重复提交并替换正在加载的 checkout；这是同一链路的独立重试缺口，不能仅凭现有日志认定它就是本次竞态的唯一触发原因。
+- 改动文件：
+  - `app/extensions/playwright_runtime.py`
+  - `app/extensions/playwright_frame_guard.cjs`
+  - `app/services/browser_context.py`
+  - `app/services/epic_games_service.py`
+  - `tests/test_playwright_runtime.py`
+  - `tests/test_browser_runtime_smoke.py`
+  - `tests/test_checkout_state_machine.py`
+  - `docs/advanced.md`
+  - `docs/advanced.en.md`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 两个 Firefox 后端启动驱动前加载同一窄范围保护，仅跳过不存在的 frame 的导航提交事件；有效 frame 的原始处理、worker 清理和其他异常保持不变。未修改 `.venv` 文件、全局 Node 环境、模型配置或通知配置。
+  - `Get` 重试前检查 checkout 是否已经推进；若已推进则进入结账观察，不再重复点击。诊断截图增加 5 秒时限并容忍失败，避免覆盖原始领取异常或虚报截图已保存。
+  - 按本次用户明确要求执行测试：修改前基线 `60 passed`；修复后 `EPIC_BROWSER_SMOKE=1 .venv/bin/python -m pytest -q` 为 `70 passed`，包含实际 Node 驱动崩溃复现、有效 frame 行为保留、带空格路径、重复点击防护，以及两个真实浏览器的 iframe 替换检查。
+  - 本地真实 Camoufox 流程复用已有登录态，在 `Get`、设备不支持弹窗、`Add to library` 后确认 `IN LIBRARY`，领取进程 exit code 0；另起浏览器只读核对 Epic 订单历史，确认 `Alone With You` 对应记录存在。
+  - 普通 Playwright Firefox 的真实登录对照仍因登录未完成而失败，未将其转为成功。本次未重新验证全新会话的完整 hCaptcha 登录路径，也未重跑 GitHub Actions；不能把本地结果等同于云端所有网络环境均已通过。
+  - Ruff、Black、Node 语法检查、hCaptcha 协议契约检查及 `git diff --check` 通过；中英文排障文档补充原始驱动日志的定位方法和升级 Playwright 后的复验要求。
+
+### 2026-09-06 增加可选 WXPush 微信通知并隔离通知异常（PR #29）
+
+- 现象：
+  - Issue #28 希望通过微信接收领取结果；原有通知渠道仅支持 Telegram。
+  - PR #29 初版中，错误的 `WXPUSH_ENDPOINT`（如 `https://[broken`）可能在通知异常保护之外触发 URL 解析异常，覆盖领取结果或阻断限流后的正常返回。
+  - 初版未验证响应是否符合 WXPush 成功协议，误配为 `/skin` 页面时，即使接口返回 HTTP 200 HTML、没有发送消息，也可能记录发送成功。
+- 根因判断：
+  - 通知端点仅检查是否包含 `://`，未完整保护地址解析、消息构造及响应读取；HTTP 请求成功也不等同于微信推送成功。
+  - 新渠道必须复用现有领取摘要和账号标签，并保持可选配置，不能把配置错误、网络或推送服务故障转换成领取任务失败。
+- 改动文件：
+  - `app/services/wxpush_notification_service.py`
+  - `app/deploy.py`
+  - `tests/test_wxpush_notification.py`
+  - `.github/workflows/epic-gamer.yml`
+  - `.github/workflows/README.md`
+  - `.github/workflows/README.en.md`
+  - `README.md`
+  - `README.en.md`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 新增面向自托管 `frankiejun/wxpush` 的可选通知渠道。仅在 Token 和可解析的 HTTP(S) 端点同时配置时启用；未配置时不新增通知请求，保持原单账号和 Telegram 路径。
+  - 复用 `CollectionSummary`，向已配置渠道发送同一领取摘要；多账号正文使用现有打码标签。标题限制为 20 字，正文超过 500 字时按行截断并标记；中英文文档说明所需 Secrets、服务部署及微信模板限制。
+  - URL 解析拒绝已识别的非法地址，消息构造、HTTP 发送及响应读取异常均作为通知警告处理。仅接受 JSON 对象中以 `Successfully sent messages` 开头的 `msg` 作为服务端成功确认；HTML、无效 JSON 或未确认成功的响应不再记录成功日志。
+  - 限流仍先发送包含失败原因的摘要，再返回 `rate_limited` 正常结束；不会把限流记为领取成功，其他领取异常仍保持失败。未改动登录、hCaptcha、浏览器或 checkout 业务逻辑，保留 `master` 的 `70354be` 浏览器修复。
+  - 对最新 PR 代码完成静态复审，并核对 WXPush 上游 `/wxsend` 响应协议；Ruff、Black、Python 语法、工作流 YAML 和 `git diff --check` 检查通过。
+  - 按仓库规则，本轮未执行测试或真实微信投递。新增文件包含 29 个测试定义，但仍缺少发送异常、双渠道调度及限流返回值的集成回归覆盖；不能将此前浏览器修复的 70 项测试结果视为本 PR 的验证结果。
+
+### 2026-09-09 合并上游并替换不完整的 Playwright frame 补丁
+
+- 现象：
+  - Actions run `33792311235` / job `100771585727` 在登录和商店会话验证成功后，领取 `Alone With You` 时出现 `clearWebSockets` 读取空 frame 的 `parentFrame` 错误，Node 驱动退出，Python 随后报连接关闭并以 exit code 1 结束。
+  - 启动日志已确认旧补丁加载，不能将此次失败归因于补丁未启用。
+- 根因判断：
+  - 本地旧补丁只保护 `removeChildFramesRecursively`，未阻止同一个失效 frame 继续进入 `clearWebSockets` 及后续导航处理；此前“彻底杜绝”驱动崩溃的判断不完整。
+  - 上游 `70354be` 已在 Firefox 导航事件入口过滤不存在的 frame，可覆盖此次 `parentFrame` 空值路径；无需继续在驱动文件中逐个补空值判断。
+- 改动文件：
+  - 合并 `upstream/master` 至 `d90190b`，包含 Firefox 导航防护、领取按钮重试保护、诊断截图保护、可选 WXPush 通知及相关文档和 Issue 表单。
+  - 删除 `app/extensions/playwright_patch.py`，移除 `app/deploy.py` 和 `app/services/browser_context.py` 中的旧补丁调用。
+  - `app/extensions/playwright_runtime.py`、`app/extensions/playwright_frame_guard.cjs`、`app/services/epic_games_service.py` 使用上游对应修正；保留本地既有登录、hCaptcha 和结账判断改动。
+  - `docs/maintenance-log.md` 保留本地历史，追加上游新记录及本条合并说明。
+- 处理结果：
+  - 两个浏览器后端启动前统一安装上游的进程内导航防护，失效 frame 在进入 FrameManager 前返回；有效 frame 继续执行原有逻辑。
+  - 移除重复修改已安装 Playwright 文件的不完整补丁，保留上游重试前检查结账进度、截图超时和异常保护。
+  - Python AST 语法检查、Node `--check` 和 `git diff --check` 通过；按仓库规则未执行测试、真实领取或重跑 Actions，云端领取结果尚待验证。
+  - 对 5 个合并相关 Python 文件运行 Ruff，报告 54 项问题；逐项按规则、消息和源码行对照两个合并父版本，均可追溯到既有代码。Black 检查 4 个文件通过，`epic_games_service.py` 的既有格式差异仍存在，本次未扩大范围重排无关代码。
