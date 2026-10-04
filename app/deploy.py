@@ -11,7 +11,6 @@ using browser automation and scheduling capabilities.
 """
 
 import asyncio
-import json
 import signal
 from contextlib import suppress
 from datetime import datetime
@@ -22,6 +21,7 @@ from loguru import logger
 from pytz import timezone
 
 from accounts import get_epic_accounts_raw, mask_email, parse_multi_accounts, swap_account
+from extensions.runtime_failures import llm_failure_kind
 from services.epic_authorization_service import EpicAuthorization
 from services.browser_context import open_browser_context, resolve_headless_mode
 from services.epic_collection_summary_service import collect_epic_games_with_summary
@@ -65,7 +65,7 @@ def _is_free_game_rate_limit_error(err: Exception) -> bool:
 
 
 @logger.catch(reraise=True)
-async def execute_browser_tasks(headless: bool | str = True, *, collect_summary: bool = False):
+async def execute_browser_tasks(headless: bool | str = True):
     """
     Execute Epic Games free game collection tasks using browser automation.
 
@@ -95,11 +95,7 @@ async def execute_browser_tasks(headless: bool | str = True, *, collect_summary:
         logger.debug("Starting free games collection process")
         game_page = await browser.new_page()
         agent = EpicAgent(game_page)
-        if collect_summary:
-            summary = await collect_epic_games_with_summary(agent)
-        else:
-            await agent.collect_epic_games()
-            summary = None
+        summary = await collect_epic_games_with_summary(agent)
         logger.debug("Free games collection completed")
 
         # Cleanup browser resources
@@ -139,9 +135,7 @@ async def execute_browser_tasks_with_notification(
         logger.debug("Notification channel(s) enabled: {}", ", ".join(enabled_channels))
 
     try:
-        summary = await execute_browser_tasks(
-            headless=headless, collect_summary=notifications_enabled
-        )
+        summary = await execute_browser_tasks(headless=headless)
     except Exception as err:
         # Notify first, then decide whether this failure is a rate limit — the
         # rate-limited outcome must not swallow the failure notification.
@@ -196,7 +190,16 @@ async def execute_multiple_accounts(
                 logger.success("Account {}/{} completed: {}", index, total, masked_email)
         except Exception as err:
             failed_accounts.append(masked_email)
-            logger.error("Account {}/{} failed: {} | error: {}", index, total, masked_email, err)
+            logger.error(
+                "Account {}/{} failed: {} | error_type: {}",
+                index,
+                total,
+                masked_email,
+                type(err).__name__,
+            )
+            if llm_failure_kind(err) in {'daily_quota', 'configuration'}:
+                logger.error('Shared LLM quota/configuration failed; stopping remaining accounts.')
+                raise
             # Continue to next account — don't abort the entire run
 
     logger.info("=" * 60)
@@ -271,11 +274,11 @@ async def deploy():
     """
     headless = resolve_headless_mode()
 
-    # Log current configuration for debugging
-    sj = settings.model_dump(mode="json")
-    sj["headless"] = headless
     logger.debug(
-        f"Starting deployment with configuration: {json.dumps(sj, indent=2, ensure_ascii=False)}"
+        'Starting deployment | browser={} | headless={} | captcha_solving={}',
+        settings.BROWSER_BACKEND,
+        headless,
+        settings.ALLOW_CAPTCHA_SOLVING,
     )
     logger.info(
         "Effective LLM model routing | provider={} | challenge_classifier={} | "

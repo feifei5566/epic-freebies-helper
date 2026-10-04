@@ -9,11 +9,11 @@ import json
 import re
 import time
 from contextlib import suppress
+from datetime import datetime, timezone
 from json import JSONDecodeError
 from typing import List
 
 import httpx
-from hcaptcha_challenger.agent import AgentV
 from hcaptcha_challenger.models import ChallengeSignal
 from loguru import logger
 from playwright.async_api import Error as PlaywrightError
@@ -22,7 +22,8 @@ from playwright.async_api import TimeoutError, FrameLocator
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt
 
-from extensions.hcaptcha_runtime import wait_for_challenge_signal
+from extensions.hcaptcha_runtime import EpicCaptchaAgent as AgentV, wait_for_challenge_signal
+from extensions.runtime_failures import raise_if_non_retryable
 from models import OrderItem, Order
 from models import PromotionGame
 from services.epic_authorization_service import EpicManualActionRequiredError
@@ -75,20 +76,33 @@ def get_promotions() -> List[PromotionGame]:
 
     def is_discount_game(prot: dict) -> bool | None:
         with suppress(KeyError, IndexError, TypeError):
+            if prot['price']['totalPrice']['discountPrice'] != 0:
+                return False
+            if 'subscription' in prot.get('offerType', '').lower():
+                return False
+            if any('subscription' in c.get('path', '').lower() for c in prot.get('categories', [])):
+                return False
             offers = prot["promotions"]["promotionalOffers"][0]["promotionalOffers"]
             for i, offer in enumerate(offers):
-                if offer["discountSetting"]["discountPercentage"] == 0:
+                now = datetime.now(timezone.utc)
+                start = datetime.fromisoformat(offer['startDate'].replace('Z', '+00:00'))
+                end = datetime.fromisoformat(offer['endDate'].replace('Z', '+00:00'))
+                if start <= now < end and offer["discountSetting"]["discountPercentage"] == 0:
                     return True
 
     promotions: List[PromotionGame] = []
 
-    resp = httpx.get(URL_PROMOTIONS, params={"local": "zh-CN"})
+    resp = httpx.get(URL_PROMOTIONS, params={"locale": "en-US"}, timeout=30)
+    resp.raise_for_status()
 
     try:
         data = resp.json()
     except JSONDecodeError as err:
-        logger.error("Failed to get promotions", err=err)
-        return []
+        raise RuntimeError('Epic promotion response is not valid JSON') from err
+
+    elements = data.get('data', {}).get('Catalog', {}).get('searchStore', {}).get('elements')
+    if not isinstance(elements, list):
+        raise RuntimeError('Epic promotion response does not contain an offers list')
 
     with suppress(Exception):
         cache_key = RUNTIME_DIR.joinpath("promotions.json")
@@ -96,7 +110,7 @@ def get_promotions() -> List[PromotionGame]:
         cache_key.write_text(json.dumps(data, indent=2, ensure_ascii=False))
 
     # Get store promotion data and <this week free> games
-    for e in data["data"]["Catalog"]["searchStore"]["elements"]:
+    for e in elements:
         if not is_discount_game(e):
             continue
 
@@ -192,21 +206,6 @@ class EpicAgent:
                     return "false"
             except Exception as e:
                 logger.debug(f"Fallback login check (Sign In locator) failed: {e}")
-
-            # 🟢 Fallback 策略 2：檢查 SSO/Session cookies 存在性
-            try:
-                cookies = await self.page.context.cookies()
-                has_session = any(
-                    "sso" in c["name"].lower()
-                    or "bearer" in c["name"].lower()
-                    or "session" in c["name"].lower()
-                    for c in cookies
-                )
-                if has_session:
-                    logger.debug("Fallback login check: Found SSO/session cookies, returning true")
-                    return "true"
-            except Exception as e:
-                logger.debug(f"Fallback login check (Cookies check) failed: {e}")
 
             return None
 
@@ -316,7 +315,7 @@ class EpicAgent:
                 if order.orderType != "PURCHASE":
                     continue
                 for item in order.items:
-                    if not item.namespace or len(item.namespace) != 32:
+                    if not item.namespace:
                         continue
                     completed_orders.append(item)
         except Exception as err:
@@ -334,12 +333,18 @@ class EpicAgent:
         self._namespaces = [order.namespace for order in self._orders]
         return set(self._namespaces)
 
+    async def refresh_order_keys(self) -> set[tuple[str, str]]:
+        await self.refresh_order_namespaces()
+        return {(order.namespace, order.offerId) for order in self._orders}
+
     async def _check_orders(self):
-        await self._sync_order_history()
+        if not await self._sync_order_history():
+            raise RuntimeError('Cannot collect games without a verified Epic order history')
         self._namespaces = self._namespaces or [order.namespace for order in self._orders]
         all_promotions = get_promotions()
-        claimed_promotions = [p for p in all_promotions if p.namespace in self._namespaces]
-        self._promotions = [p for p in all_promotions if p.namespace not in self._namespaces]
+        order_keys = {(order.namespace, order.offerId) for order in self._orders}
+        claimed_promotions = [p for p in all_promotions if (p.namespace, p.id) in order_keys]
+        self._promotions = [p for p in all_promotions if (p.namespace, p.id) not in order_keys]
 
         for promotion in claimed_promotions:
             logger.success(
@@ -1128,12 +1133,46 @@ class EpicGames:
 
     @staticmethod
     async def _agree_license(page: Page):
-        logger.debug("Agree license")
-        with suppress(TimeoutError):
-            await page.click("//label[@for='agree']", timeout=4000)
-            accept = page.locator("//button//span[text()='Accept']")
-            if await accept.is_enabled():
-                await accept.click()
+        if (
+            await page.locator("//label[@for='agree']").is_visible()
+            or await page.get_by_role('button', name='Accept', exact=True).is_visible()
+        ):
+            raise EpicManualActionRequiredError(
+                'Epic requires acceptance of new terms; confirm them manually before retrying.'
+            )
+
+    @staticmethod
+    async def _assert_free_checkout(wpc: PurchaseContainer):
+        # Scope the amount to the checkout frame, never product recommendations.
+        if await wpc.get_by_role('button', name='Accept', exact=True).is_visible():
+            raise EpicManualActionRequiredError('New checkout terms require manual confirmation.')
+        terms = wpc.locator(
+            'input[type="checkbox"][id*="agree" i], '
+            'input[type="checkbox"][name*="agree" i], '
+            'input[type="checkbox"][id*="terms" i], '
+            'input[type="checkbox"][name*="terms" i]'
+        )
+        for index in range(await terms.count()):
+            if not await terms.nth(index).is_checked():
+                raise EpicManualActionRequiredError(
+                    'New checkout terms require manual confirmation.'
+                )
+        text = await wpc.locator('body').inner_text(timeout=5000)
+        totals = re.findall(
+            r'(?im)^\s*(?:order\s+total|total\s+due|total)\s*:?\s*\n?\s*([^\n]+)', text
+        )
+        if not totals:
+            raise EpicManualActionRequiredError(
+                'Cannot verify a zero checkout total; order not submitted.'
+            )
+        for total in totals:
+            amount = re.sub(r'[^0-9.,]', '', total)
+            if total.strip().lower() == 'free':
+                continue
+            if not amount or any(digit != '0' for digit in amount if digit.isdigit()):
+                raise EpicManualActionRequiredError(
+                    'Checkout total is not confirmed as zero; order not submitted.'
+                )
 
     @staticmethod
     async def _active_purchase_container(
@@ -1205,6 +1244,7 @@ class EpicGames:
     @staticmethod
     async def _uk_confirm_order(wpc: PurchaseContainer):
         logger.debug("UK confirm order")
+        await EpicGames._assert_free_checkout(wpc)
         with suppress(TimeoutError):
             accept = wpc.locator("//button[contains(@class, 'payment-confirm__btn')]")
             if await accept.is_enabled(timeout=5000):
@@ -1396,7 +1436,7 @@ class EpicGames:
         started_at = time.monotonic()
         attempt = 0
 
-        while (time.monotonic() - started_at) * 1000 < max_wait_ms:
+        while attempt < 3 and (time.monotonic() - started_at) * 1000 < max_wait_ms:
             attempt += 1
             await self._raise_if_free_game_rate_limited(page, url)
 
@@ -1453,6 +1493,7 @@ class EpicGames:
                         url,
                     )
             except Exception as err:
+                raise_if_non_retryable(err)
                 logger.warning(
                     f"Checkout security check solve attempt failed (attempt {attempt}): {err}"
                 )
@@ -1527,6 +1568,12 @@ class EpicGames:
 
     async def _probe_checkout_challenge(self, page: Page, agent: AgentV, url: str) -> bool:
         logger.debug(f"Probing checkout for latent challenge. {url=}")
+        if not settings.ALLOW_CAPTCHA_SOLVING:
+            if getattr(
+                agent, '_epic_captcha_required', False
+            ) or await self._is_checkout_security_check_visible(page):
+                await wait_for_challenge_signal(agent, context='checkout_manual', timeout_seconds=5)
+            return False
         if await self._is_checkout_security_check_visible(page):
             logger.debug(f"Checkout challenge probe found visible challenge before waiting. {url=}")
             return True
@@ -1536,6 +1583,7 @@ class EpicGames:
                 agent, context="checkout_probe", timeout_seconds=25
             )
         except Exception as err:
+            raise_if_non_retryable(err)
             if await self._is_checkout_security_check_visible(page):
                 logger.warning(
                     f"Checkout challenge probe detected challenge artifacts after wait failure: {err} | {url=}"
@@ -1554,6 +1602,8 @@ class EpicGames:
     async def _extended_checkout_challenge_probe(
         self, page: Page, agent: AgentV, url: str, timeout_seconds: int = 90
     ) -> bool:
+        if not settings.ALLOW_CAPTCHA_SOLVING:
+            return await self._probe_checkout_challenge(page, agent, url)
         logger.warning(
             "Checkout remained on Place Order after repeated attempts - running extended challenge probe. {}",
             url,
@@ -1564,6 +1614,7 @@ class EpicGames:
                 agent, context="checkout_extended_probe", timeout_seconds=timeout_seconds
             )
         except Exception as err:
+            raise_if_non_retryable(err)
             if await self._is_checkout_security_check_visible(page):
                 logger.warning(
                     f"Extended checkout challenge probe left a visible challenge behind: {err} | {url=}"
@@ -1602,7 +1653,7 @@ class EpicGames:
                 if order.orderType != "PURCHASE":
                     continue
                 for item in order.items:
-                    if item.namespace == promotion.namespace or item.offerId == promotion.id:
+                    if item.namespace == promotion.namespace and item.offerId == promotion.id:
                         logger.success(
                             "Promotion found in order history - title='{}' namespace='{}' offer='{}'",
                             promotion.title,
@@ -1895,6 +1946,7 @@ class EpicGames:
                         break
 
                 _wpc, payment_btn = payload
+                await self._assert_free_checkout(_wpc)
                 submission_attempt += 1
                 logger.debug(
                     "Place Order submission cycle ({}/{}) | button_text={}",
@@ -1930,8 +1982,7 @@ class EpicGames:
                     continue
 
                 logger.debug("No explicit checkout security check detected after Place Order")
-                with suppress(Exception):
-                    await self._probe_checkout_challenge(page, agent, url)
+                await self._probe_checkout_challenge(page, agent, url)
 
                 outcome = await self._observe_checkout_outcome(
                     page, url, timeout_ms=remaining_ms(20000)
@@ -1981,6 +2032,7 @@ class EpicGames:
             )
             raise
         except Exception as err:
+            raise_if_non_retryable(err)
             logger.warning(f"Instant checkout warning: {err}")
             await self._capture_purchase_debug(page, "instant_checkout_warning", url)
             with suppress(Exception):
@@ -2004,8 +2056,6 @@ class EpicGames:
             "IN LIBRARY",
             "OWNED",
             "ALREADY OWNED",
-            "UNAVAILABLE",
-            "COMING SOON",
             "IN YOUR LIBRARY",
             "OWN THIS GAME",
         ]
@@ -2044,8 +2094,7 @@ class EpicGames:
             try:
                 if not await purchase_btn.is_visible():
                     # 再次检查是否在库中 (有时按钮不叫 purchase-cta，而是简单的 disabled button)
-                    all_text = (await page.locator("body").text_content() or "").upper()
-                    if any(marker in all_text for marker in owned_markers):
+                    if await self._is_promotion_in_order_history(promotion):
                         logger.success(
                             "Game already claimed / already in library (page text scan) - "
                             f"title='{game_title}' url='{url}'"
@@ -2063,23 +2112,19 @@ class EpicGames:
                 await self._log_purchase_button_context(page, purchase_btn, url)
             )
             btn_text_upper = btn_text.upper()
-            container_text_upper = container_text.upper()
 
             logger.debug(f"👉 Found Button: '{btn_text}'")
 
             # 4. 黑名单检查：只有这些情况绝对不能点
-            # 如果是 'IN LIBRARY', 'OWNED', 'UNAVAILABLE', 'COMING SOON' -> 跳过
+            # Disabled/unavailable buttons require an order-history check.
             if disabled is not None or aria_disabled == "true":
-                logger.success(
-                    "Game already claimed / unavailable (purchase button disabled) - "
-                    f"title='{game_title}' text='{btn_text}' url='{url}'"
-                )
+                if not await self._is_promotion_in_order_history(promotion):
+                    failed_urls.append(url)
+                    logger.warning('Disabled purchase button without a verified order - {}', url)
                 await self._capture_purchase_debug(page, "button_disabled", url)
                 continue
 
-            if any(marker in btn_text_upper for marker in owned_markers) or any(
-                marker in container_text_upper for marker in owned_markers
-            ):
+            if any(marker in btn_text_upper for marker in owned_markers):
                 logger.success(
                     f"Game already claimed / already in library - title='{game_title}' text='{btn_text}' url='{url}'"
                 )
@@ -2120,36 +2165,42 @@ class EpicGames:
 
         return has_pending_cart_items, instant_claimed, failed_urls
 
-    async def _empty_cart(self, page: Page, wait_rerender: int = 30) -> bool | None:
-        has_paid_free = False
+    async def _empty_cart(self, page: Page, promotions: List[PromotionGame]) -> bool:
         try:
+            allowed_titles = {' '.join(p.title.casefold().split()) for p in promotions}
             cards = await page.query_selector_all("//div[@data-testid='offer-card-layout-wrapper']")
+            if not cards:
+                raise EpicManualActionRequiredError('Cannot verify weekly cart items; checkout stopped.')
             for card in cards:
-                is_free = await card.query_selector("//span[text()='Free']")
-                if not is_free:
-                    has_paid_free = True
-                    wishlist_btn = await card.query_selector(
-                        "//button//span[text()='Move to wishlist']"
+                lines = {
+                    ' '.join(line.casefold().split())
+                    for line in (await card.inner_text()).splitlines()
+                }
+                if not lines.intersection(allowed_titles):
+                    raise EpicManualActionRequiredError(
+                        'Cart contains an item outside the current weekly offers; checkout stopped.'
                     )
-                    await wishlist_btn.click()
-
-            if has_paid_free and wait_rerender:
-                wait_rerender -= 1
-                await page.wait_for_timeout(2000)
-                return await self._empty_cart(page, wait_rerender)
+                is_free = await card.query_selector(".//span[text()='Free']")
+                if not is_free:
+                    raise EpicManualActionRequiredError(
+                        'Cart contains a paid or unverified item; remove it manually before retrying.'
+                    )
             return True
         except TimeoutError as err:
             logger.warning("Failed to empty shopping cart", err=err)
             return False
 
-    async def _purchase_free_game(self, max_attempts: int = 3):
+    async def _purchase_free_game(self, promotions: List[PromotionGame], max_attempts: int = 3):
         last_error: Exception | None = None
 
         for attempt in range(1, max_attempts + 1):
             try:
                 await self.page.goto(URL_CART, wait_until="domcontentloaded")
-                logger.debug("Move ALL paid games from the shopping cart out")
-                await self._empty_cart(self.page)
+                logger.debug("Verify the shopping cart contains only free games")
+                if not await self._empty_cart(self.page, promotions):
+                    raise EpicManualActionRequiredError(
+                        'Cannot verify that the cart contains only free games.'
+                    )
 
                 agent = AgentV(page=self.page, agent_config=settings)
                 await self.page.click("//button//span[text()='Check Out']")
@@ -2158,16 +2209,26 @@ class EpicGames:
                 logger.debug("Move to webPurchaseContainer iframe")
                 wpc, payment_btn = await self._active_purchase_container(self.page)
                 logger.debug("Click payment button")
-                await self._uk_confirm_order(wpc)
-                challenge_signal = await wait_for_challenge_signal(
-                    agent,
-                    context=f"cart_purchase:{attempt}",
-                    timeout_seconds=settings.EXECUTION_TIMEOUT + settings.RESPONSE_TIMEOUT + 5,
+                if not await self._uk_confirm_order(wpc):
+                    await self._assert_free_checkout(wpc)
+                    await self._submit_place_order(payment_btn, URL_CART)
+                outcome = await self._observe_checkout_outcome(
+                    self.page, URL_CART, timeout_ms=45000
                 )
-                if challenge_signal is ChallengeSignal.SUCCESS:
+                if outcome == 'claimed':
                     return
-                raise RuntimeError(f"cart purchase hCaptcha returned {challenge_signal.value}")
+                if outcome == 'security':
+                    if await self._resolve_checkout_security_check(self.page, agent, URL_CART):
+                        if (
+                            await self._observe_checkout_outcome(
+                                self.page, URL_CART, timeout_ms=45000
+                            )
+                            == 'claimed'
+                        ):
+                            return
+                raise RuntimeError('Cart checkout did not produce a confirmed order')
             except Exception as err:
+                raise_if_non_retryable(err)
                 last_error = err
                 logger.warning(
                     "Failed to complete cart purchase captcha | attempt={}/{} | err={!r}",
@@ -2192,7 +2253,7 @@ class EpicGames:
         cart_claimed = False
 
         if has_cart_items:
-            await self._purchase_free_game()
+            await self._purchase_free_game(promotions)
             try:
                 await self.page.wait_for_url(URL_CART_SUCCESS)
                 logger.success("🎉 Successfully collected cart games")

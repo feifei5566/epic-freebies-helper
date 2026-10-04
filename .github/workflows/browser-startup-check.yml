@@ -34,6 +34,7 @@ jobs:
           names = {
               'certifi', 'charset-normalizer', 'greenlet', 'idna', 'loguru',
               'playwright', 'pyee', 'requests', 'typing-extensions', 'urllib3',
+              'tenacity', 'pydantic', 'pydantic-core', 'annotated-types', 'typing-inspection',
           }
           requirements = []
           for package in packages:
@@ -48,6 +49,11 @@ jobs:
           )
           PY
           python -m pip install --only-binary=:all: --require-hashes -r /tmp/browser-startup-requirements.txt
+
+      - name: Verify runtime stopping rules with offline inputs
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -B scripts/check_runtime_controls.py
 
       - name: Install Playwright Firefox and Linux display dependencies
         run: |

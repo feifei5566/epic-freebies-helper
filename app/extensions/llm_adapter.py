@@ -12,6 +12,7 @@ import httpx
 from hcaptcha_challenger.models import ChallengeTypeEnum, RequestType
 from loguru import logger
 from pydantic import BaseModel
+from extensions.runtime_failures import llm_failure_kind, llm_retry_delay
 
 CHALLENGE_TYPE_VALUES = frozenset(member.value for member in ChallengeTypeEnum)
 REQUEST_TYPE_VALUES = frozenset(member.value for member in RequestType)
@@ -1272,10 +1273,10 @@ class GLMCompatibleGenAIClient:
         self.aio = _GLMAsyncNamespace(settings, self._storage)
 
 
-def _limit_glm_provider_attempts(max_attempts: int = 2) -> bool:
+def _limit_llm_provider_attempts(max_attempts: int = 2) -> bool:
     try:
         from hcaptcha_challenger.tools.internal.providers.gemini import GeminiProvider
-        from tenacity import stop_after_attempt
+        from tenacity import retry_if_exception, stop_after_attempt
     except ImportError:
         return False
 
@@ -1283,6 +1284,20 @@ def _limit_glm_provider_attempts(max_attempts: int = 2) -> bool:
     if retrying is None:
         return False
     retrying.stop = stop_after_attempt(max_attempts)
+    retrying.retry = retry_if_exception(
+        lambda error: llm_failure_kind(error) not in {'daily_quota', 'configuration'}
+    )
+    retrying.reraise = True
+    retrying.wait = lambda state: (
+        llm_retry_delay(state.outcome.exception())
+        if llm_failure_kind(state.outcome.exception()) == 'rate_limit'
+        else 3
+    )
+    retrying.before_sleep = lambda state: logger.warning(
+        'LLM request retry | attempt={} | error_type={}',
+        state.attempt_number,
+        type(state.outcome.exception()).__name__,
+    )
     return True
 
 
@@ -1356,8 +1371,6 @@ def apply_glm_patch(settings: Any):
         from google import genai
 
         genai.Client = GLMCompatibleGenAIClient
-        if not _limit_glm_provider_attempts():
-            logger.warning("GLM provider retry budget could not be configured")
         logger.info(
             f"🚀 GLM 兼容补丁已应用 | 模型: {settings.GLM_MODEL} | 地址: {settings.GLM_BASE_URL}"
         )
@@ -1366,6 +1379,8 @@ def apply_glm_patch(settings: Any):
 
 
 def apply_llm_patch(settings: Any):
+    if not _limit_llm_provider_attempts():
+        raise RuntimeError('LLM provider retry budget could not be configured')
     provider = settings.LLM_PROVIDER.lower()
     if provider == "glm":
         if not settings.GLM_API_KEY:

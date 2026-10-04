@@ -13,14 +13,18 @@ from contextlib import suppress
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-from hcaptcha_challenger.agent import AgentV
 from hcaptcha_challenger.models import ChallengeSignal
 from loguru import logger
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import expect, Locator, Page, Response
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from extensions.hcaptcha_runtime import wait_for_challenge_signal
+from extensions.hcaptcha_runtime import EpicCaptchaAgent as AgentV, wait_for_challenge_signal
+from extensions.runtime_failures import (
+    EpicNonRetryableError,
+    EpicLlmQuotaExhaustedError,
+    raise_if_non_retryable,
+)
 from services.epic_totp_service import redact_totp_inputs, submit_totp_challenge, totp_login_enabled
 from settings import SCREENSHOTS_DIR, settings
 
@@ -47,23 +51,12 @@ PASSWORD_STEP_MARKERS = (
 )
 
 
-class EpicAuthenticationFatalError(RuntimeError):
+class EpicAuthenticationFatalError(EpicNonRetryableError):
     pass
 
 
-class EpicManualActionRequiredError(RuntimeError):
+class EpicManualActionRequiredError(EpicNonRetryableError):
     pass
-
-
-class EpicLlmQuotaExhaustedError(RuntimeError):
-    pass
-
-
-def _is_daily_llm_quota_error(err: Exception) -> bool:
-    text = str(err)
-    return "RESOURCE_EXHAUSTED" in text and (
-        "GenerateRequestsPerDay" in text or "FreeTier" in text
-    )
 
 
 class EpicAuthorization:
@@ -84,17 +77,18 @@ class EpicAuthorization:
 
         with suppress(Exception):
             result = await r.json()
-            result_json = json.dumps(result, indent=2, ensure_ascii=False)
 
             if "/id/api/login" in r.url and result.get("errorCode"):
                 self._login_error_signal.put_nowait(result)
-                logger.error(f"{r.request.method} {r.url} - {result_json}")
+                logger.error(
+                    "Epic login rejected | status={} | error_code={}",
+                    r.status,
+                    result.get("errorCode"),
+                )
             elif "/id/api/analytics" in r.url and result.get("accountId"):
                 self._is_login_success_signal.put_nowait(result)
             elif "/account/v2/refresh-csrf" in r.url and result.get("success", False) is True:
                 self._is_refresh_csrf_signal.put_nowait(result)
-            # else:
-            #     logger.debug(f"{r.request.method} {r.url} - {result_json}")
 
     @staticmethod
     def _drain_queue(queue: asyncio.Queue):
@@ -391,14 +385,13 @@ class EpicAuthorization:
                 max_attempts,
             )
             try:
-                await agent.wait_for_challenge()
+                await wait_for_challenge_signal(
+                    agent,
+                    context=reason,
+                    timeout_seconds=settings.EXECUTION_TIMEOUT + settings.RESPONSE_TIMEOUT + 5,
+                )
             except Exception as err:
-                if _is_daily_llm_quota_error(err):
-                    raise EpicLlmQuotaExhaustedError(
-                        "Gemini daily quota exhausted while solving login captcha. "
-                        "Free-tier gemini-3-flash allows 20 requests/day; wait for reset "
-                        "or switch GEMINI_API_KEY / GEMINI_MODEL."
-                    ) from err
+                raise_if_non_retryable(err)
                 logger.warning(
                     "Login captcha solve attempt failed ({}, attempt {}/{}): {!r}",
                     reason,
@@ -517,6 +510,7 @@ class EpicAuthorization:
                     await self._solve_visible_hcaptcha(agent, reason=f"after {step_name}")
                 return
             except Exception as err:
+                raise_if_non_retryable(err)
                 last_error = err
                 click_advanced = await self._has_visible_hcaptcha()
                 if is_sign_in_step:
@@ -733,6 +727,17 @@ class EpicAuthorization:
                     await submit_fresh_totp(error_code)
                     continue
 
+                if any(
+                    marker in error_code
+                    for marker in (
+                        "invalid_account_credentials",
+                        "invalid_credentials",
+                        "invalid_password",
+                        "account_locked",
+                        "account_disabled",
+                    )
+                ):
+                    raise EpicAuthenticationFatalError(error_code)
                 raise RuntimeError(error_code)
 
             if not self._is_login_success_signal.empty():
@@ -740,7 +745,9 @@ class EpicAuthorization:
                 return
 
             if self._needs_privacy_policy_correction():
-                raise RuntimeError("privacy_policy_confirmation_required")
+                raise EpicManualActionRequiredError(
+                    "Epic requires a manual privacy-policy confirmation"
+                )
 
             if self._needs_mfa_setup_prompt():
                 if not await self._dismiss_mfa_setup_prompt(timeout_ms=30000):
@@ -777,12 +784,7 @@ class EpicAuthorization:
                             self.page.url,
                         )
                 except Exception as err:
-                    if _is_daily_llm_quota_error(err):
-                        raise EpicLlmQuotaExhaustedError(
-                            "Gemini daily quota exhausted while solving login captcha. "
-                            "Free-tier gemini-3-flash allows 20 requests/day; wait for reset "
-                            "or switch GEMINI_API_KEY / GEMINI_MODEL."
-                        ) from err
+                    raise_if_non_retryable(err)
                     logger.warning(
                         "Login captcha solve attempt failed during authentication outcome | err={!r}",
                         err,
@@ -921,21 +923,6 @@ class EpicAuthorization:
             except Exception as e:
                 logger.debug(f"Fallback login check (Sign In locator) failed: {e}")
 
-            # Fallback: SSO/session cookies => logged in
-            try:
-                cookies = await self.page.context.cookies()
-                has_session = any(
-                    "sso" in c["name"].lower()
-                    or "bearer" in c["name"].lower()
-                    or "session" in c["name"].lower()
-                    for c in cookies
-                )
-                if has_session:
-                    logger.debug("Fallback login check: Found SSO/session cookies, returning true")
-                    return "true"
-            except Exception as e:
-                logger.debug(f"Fallback login check (Cookies check) failed: {e}")
-
             return None
 
     async def _has_account_session(self) -> bool:
@@ -1041,53 +1028,20 @@ class EpicAuthorization:
             )
 
             login_confirmed = False
-            for challenge_attempt in range(1, 4):
-                logger.debug("Solving login challenge attempt {}/3", challenge_attempt)
-                challenge_signal = ChallengeSignal.FAILURE
-                try:
-                    challenge_signal = await wait_for_challenge_signal(
-                        agent,
-                        context=f"login:{challenge_attempt}",
-                        timeout_seconds=(
-                            settings.EXECUTION_TIMEOUT + settings.RESPONSE_TIMEOUT + 5
-                        ),
-                    )
-                except Exception:
-                    pass
-
+            for outcome_attempt in range(1, 4):
                 try:
                     await self._await_login_outcome(point_url, agent, timeout_seconds=25)
                     login_confirmed = True
                     break
                 except PlaywrightTimeoutError:
                     if await self._has_visible_hcaptcha():
-                        logger.warning(
-                            "Login outcome timed out while captcha is still visible; "
-                            "retrying solve attempt {}/3 | signal={}",
-                            challenge_attempt,
-                            challenge_signal.value,
-                        )
+                        await self._solve_visible_hcaptcha(agent, reason="login outcome")
+                    elif outcome_attempt < 3 and await self._resubmit_password_form(agent):
                         continue
-
-                    if challenge_attempt < 3 and await self._resubmit_password_form(agent):
-                        logger.warning(
-                            "Login captcha disappeared without authentication; resubmitted the "
-                            "password form before solve attempt {}/3",
-                            challenge_attempt + 1,
-                        )
-                        try:
-                            await self._await_login_outcome(point_url, agent, timeout_seconds=8)
-                            login_confirmed = True
-                            break
-                        except PlaywrightTimeoutError:
-                            if not await self._has_visible_hcaptcha():
-                                raise
-                        continue
-
-                    raise
-
+                    else:
+                        raise
             if not login_confirmed:
-                await self._await_login_outcome(point_url, agent, timeout_seconds=10)
+                raise RuntimeError("Epic login did not produce a verified authentication outcome")
             logger.success("Login success")
 
             if self._needs_mfa_setup_prompt() and not await self._dismiss_mfa_setup_prompt(
@@ -1099,6 +1053,7 @@ class EpicAuthorization:
                 await asyncio.wait_for(self._handle_right_account_validation(), timeout=30)
                 logger.success("Right account validation success")
             except Exception as err:
+                raise_if_non_retryable(err)
                 if isinstance(
                     err,
                     (
@@ -1117,17 +1072,20 @@ class EpicAuthorization:
             logger.success("Epic store session verification success")
             return True
         except Exception as err:
-            logger.warning(f"Login attempt failed: {err!r}")
+            logger.warning('Login attempt failed | error_type={}', type(err).__name__)
             sr = SCREENSHOTS_DIR.joinpath("authorization")
             sr.mkdir(parents=True, exist_ok=True)
             with suppress(Exception):
                 await redact_totp_inputs(self.page)
+                await self.page.locator(
+                    'input[type="password"], input[type="email"], #email'
+                ).evaluate_all('(inputs) => inputs.forEach(input => { input.value = ""; })')
             with suppress(Exception):
                 await self.page.screenshot(path=sr.joinpath(f"login-{int(time.time())}.png"))
             if isinstance(err, EpicAuthenticationFatalError):
                 logger.error(
-                    "Epic account requires two-factor authentication. Configure EPIC_TOTP_SECRET "
-                    "for authenticator app 2FA, or disable Epic 2FA and rerun the workflow."
+                    'Epic authentication requires manual correction | error_type={}',
+                    type(err).__name__,
                 )
                 raise
             if isinstance(err, EpicManualActionRequiredError):
@@ -1136,14 +1094,7 @@ class EpicAuthorization:
             if isinstance(err, EpicLlmQuotaExhaustedError):
                 logger.error(str(err))
                 raise
-            if _is_daily_llm_quota_error(err):
-                quota_err = EpicLlmQuotaExhaustedError(
-                    "Gemini daily quota exhausted while solving login captcha. "
-                    "Free-tier gemini-3-flash allows 20 requests/day; wait for reset "
-                    "or switch GEMINI_API_KEY / GEMINI_MODEL."
-                )
-                logger.error(str(quota_err))
-                raise quota_err from err
+            raise_if_non_retryable(err)
             return None
 
     async def invoke(self) -> bool:
@@ -1164,8 +1115,11 @@ class EpicAuthorization:
                 return False
 
             if "true" == await self._get_login_status():
-                logger.success("Epic Games is already logged in")
-                return True
+                if await self._has_account_session():
+                    await self._goto_claim_page()
+                    logger.success("Epic authenticated session verified via order history")
+                    return True
+                logger.warning("Store login marker did not correspond to a valid account session")
 
             try:
                 if await self._login():
@@ -1173,10 +1127,11 @@ class EpicAuthorization:
             except EpicManualActionRequiredError:
                 raise
             except EpicLlmQuotaExhaustedError:
-                return False
+                raise
             except EpicAuthenticationFatalError:
-                logger.error("Authentication aborted because Epic 2FA is still enabled")
-                return False
+                raise
+            except EpicNonRetryableError:
+                raise
 
             if attempt < max_attempts:
                 logger.warning(

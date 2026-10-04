@@ -1693,3 +1693,15 @@
   - 僅按 `uv.lock` 安裝啟動所需的套件並核對 wheel 雜湊，使用鎖定的 Playwright `1.53.0`，不安裝或升級完整應用程式相依套件。
   - 啟動腳本在 Linux/Xvfb 中以 `HEADLESS=virtual` 呼叫實際 `open_browser_context()`，使用暫存 profile 與獨立瀏覽器設定；不載入帳號／模型設定，禁止載入 Camoufox 與 hCaptcha，僅操作空白頁及本機 HTML，確認關閉與 profile 清理。
   - 本機靜態檢查涵蓋 Python 語法、工作流程 YAML、觸發條件、權限與差異；Linux 啟動結果由該提交的獨立 Actions run 回報。此檢查不執行測試套件，也不執行部署入口、登入、解驗證碼、領取或模型 API。
+
+
+## 2026-10-04：修補領取失敗重試與訂單確認，正式流程加入人工停止條件
+
+- 症狀：10/1 run `36921086912` 在 Camoufox 啟動前遇到 `UnknownProperty navigator.appCodeName`；9/17 run `35262789795` 已能啟動 Playwright Firefox，後續因 Gemini 429 額度停止。只修瀏覽器不能證明領取成功。
+- 根因判斷：每日額度檢查把 `FreeTier` 當作每日限制，無法區分每分鐘限制；登入與結帳外層捕捉可能吞掉不可重試錯誤；上游 `_solve_captcha` 會在例外處遞迴重試。通知停用時沒有執行訂單摘要確認，缺少前後訂單快照或未確認品項仍可能返回成功；僅依 cookie、namespace 或停用按鈕也不足以確認實際 offer 已領取。
+- 修改檔案：`app/extensions/runtime_failures.py`、`hcaptcha_runtime.py`、`llm_adapter.py`；`app/services/epic_authorization_service.py`、`epic_games_service.py`、`epic_collection_summary_service.py`；`app/deploy.py`、`settings.py`、`utils.py`；`.github/workflows/epic-gamer.yml`、`browser-startup-check.yml`；`scripts/check_runtime_controls.py`。
+- 行為：Gemini/GLM 共用最多兩次 provider 嘗試；每日 quota/配置拒絕不重試，分鐘 429 使用有上限的 Retry-After，錯誤傳遞到登入、結帳與多帳號排程。刪除登入後盲目解題等待，改先觀察登入結果，既有登入必須經訂單端點核對。
+- 安全範圍：`ALLOW_CAPTCHA_SOLVING` 預設及正式 workflow 均為 false。CAPTCHA response handler 不注入/解碼 HSW、不交給上游處理解題 payload；偵測需要驗證時停止等待人工處理。遇到新授權條款或无法確認零元總額時不提交訂單。只處理當期零元非訂閱優惠，購物車有其他品項時停止，不搬移既有品項。登入診斷截圖清空敏感輸入，移除整份 settings 輸出，關閉 traceback locals 診斷。
+- 成功標準：即使未設定通知，也要取得領取前後訂單，以 `(namespace, offerId)` 確認每個當期 offer。前快照不可用則不開始領取；後快照不可用或還有未確認項目則流程失敗。成功記錄只列 weekly/newly_claimed/previously_claimed 計數。
+- 本機結果：Python AST、workflow YAML、內嵌 shell 語法及 `git diff --check` 通過；離線針對性檢查通過每日/分鐘 quota 分類、provider 次數、上游遞迴停止、CAPTCHA handler/solver 阻擋、零元/付費/新條款、当期免費優惠篩選、訂單精確比對與缺失快照、cookie 不可單獨判定登入。依 `AGENTS.md` 未執行測試套件，離線檢查沒有 Epic/LLM 請求或解驗證碼。
+- 限制與後續：瀏覽器啟動修正已在隔離 Linux run `37171987912` 通過；本批修補須在精確提交版本重新通過 Linux CI，再合併 master 並執行一次已批准正式流程。實際 CAPTCHA、新條款、Epic 24 小時限制仍可能阻止領取；Gemini 免費額度無法由程式提高，等待供應商重置，不變更付費方案或 API key。

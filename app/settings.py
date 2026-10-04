@@ -79,6 +79,10 @@ class EpicSettings(AgentConfig):
         default=False,
         description="Disable hcaptcha-challenger recursive retries; callers own retry limits.",
     )
+    ALLOW_CAPTCHA_SOLVING: bool = Field(
+        default=False,
+        description="Stop for manual action before solving CAPTCHA unless explicitly enabled.",
+    )
     WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS: int = Field(default=3000)
     EXECUTION_TIMEOUT: float = Field(
         default=240.0,
