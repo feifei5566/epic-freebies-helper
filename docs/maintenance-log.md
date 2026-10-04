@@ -1825,3 +1825,12 @@
 - 隔離 CI：新增 .github/workflows/chatgpt-local-check.yml，只在此功能分支 push 且 repo/ref/event 精確相符時執行，contents read、checkout 不保留憑證、Python 3.12、僅安裝 uv.lock 指定版本及 wheel hashes 的必要工具。只跑既有 fake OAuth／model routing、synthetic recorder／actual adapter replay 和 runtime stopping checks；各程式封鎖真實 socket，無 Epic／模型／真實 OAuth 憑證、login 或 live-once。現有 browser startup 只綁其他分支；正式 Epic 只接受 schedule／manual，Docker 只接受 release，不因本次 push 啟動。
 - 本機驗證：20 項 OAuth／設定、44 項 recorder／replay、15 項既有 runtime control 通過；Ruff、Black（新檔與 settings）、AST、TOML lock／CI requirements、workflow trigger／permissions 靜態檢查及 git diff --check 通過。沒有執行全套測試，沒有新增 live 模型／OAuth／Epic 請求。
 - 發佈資料：明確限制 staging 為 14 個本功能程式／說明／workflow 檔案，檢查新增內容無實際 token／JWT／private key／email 或 Mac 使用者路徑；源碼中的協定欄位、正則與 fake fixture 值保留。所有本機 .verification／OAuth credentials／cookies／runtime files 均不進 Git。commit／push 與 exact-SHA CI 結果在此紀錄之後核對，未先宣稱 CI 成功。
+
+
+## 2026-10-04：將訂閱 OAuth 功能合併 master，重新驗證合併版本
+
+- 授權與範圍：使用者明確要求「幫我合併後測試」。重新核對遠端 codex/chatgpt-oauth-local 為 d12bbf560679dc160e3fc412769c787554e5d2eb，master 為 5575e2eae51f87fa492e7516d175a51d274333a5；工作目錄乾淨，master 是功能分支祖先，可正常快轉且無合併衝突。原提交隔離 CI 37204741612 已成功，但本次仍需對合併後 exact SHA 重新驗證。
+- 症狀與根因判斷：chatgpt-local-check.yml 的 push 分支及 job ref 條件只接受功能分支，因此 master 合併不會啟動該隔離驗證。正式 Epic workflow 只有 schedule／workflow_dispatch，Docker 只有 release，browser startup 只接受另一修正分支；master push 不會啟動真實領取。
+- 修改檔案：.github/workflows/chatgpt-local-check.yml 只追加 master 至 push 分支與 job ref 條件；docs/maintenance-log.md 依 AGENTS.md 追加本紀錄。原有 contents read、checkout 不保留憑證、鎖版依賴與三個離線檢查及 lint／格式步驟維持原樣，未修改正式 provider、排程或其他程式。
+- 驗證與結果：合併前核對差異、祖先關係及所有 workflow 觸發條件；修正後須確認 YAML／差異、master push 只啟動隔離 CI，並正常更新遠端 master、核對最終 SHA、追蹤該 SHA 的 master push CI 至終態。此紀錄尚未將待執行 CI 宣稱成功；最終 SHA／run URL／79 項離線檢查結果另保存於工作目錄隔離驗證紀錄。
+- 限制：不執行 AGENTS.md 禁止的全套測試，不新增 OAuth／憑證，不登入 Epic、解 CAPTCHA、領取、觸發正式 workflow 或呼叫真實／付費模型。合成圖與離線 CI 結果不代表實際領取成功。
