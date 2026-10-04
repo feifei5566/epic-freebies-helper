@@ -2180,7 +2180,7 @@ class EpicGames:
                     raise EpicManualActionRequiredError(
                         'Cart contains an item outside the current weekly offers; checkout stopped.'
                     )
-                is_free = await card.query_selector(".//span[text()='Free']")
+                is_free = await card.query_selector("xpath=.//span[text()='Free']")
                 if not is_free:
                     raise EpicManualActionRequiredError(
                         'Cart contains a paid or unverified item; remove it manually before retrying.'

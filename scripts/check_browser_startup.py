@@ -1,5 +1,6 @@
 """Verify only the Linux browser launcher, without loading account/model settings."""
 
+import ast
 import asyncio
 import importlib.abc
 import importlib.metadata
@@ -21,6 +22,50 @@ class BrowserOnlyImports(importlib.abc.MetaPathFinder):
         if fullname.split('.', 1)[0] in blocked:
             raise RuntimeError(f'Unexpected non-Playwright import: {fullname}')
         return None
+
+
+async def verify_cart_controls(page):
+    from loguru import logger
+    from playwright.async_api import TimeoutError
+
+    class ManualAction(RuntimeError):
+        pass
+
+    # Extract only the real cart gate; importing the service would load accounts.
+    tree = ast.parse((ROOT / 'app/services/epic_games_service.py').read_text())
+    node = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == '_empty_cart'
+    )
+    module = ast.parse('from __future__ import annotations\n')
+    module.body.append(node)
+    namespace = {
+        'logger': logger,
+        'TimeoutError': TimeoutError,
+        'EpicManualActionRequiredError': ManualAction,
+    }
+    exec(compile(ast.fix_missing_locations(module), 'isolated-cart-gate', 'exec'), namespace)
+    allowed = [types.SimpleNamespace(title='Offline weekly offer')]
+    card = '<div data-testid="offer-card-layout-wrapper"><div>{}</div><span>{}</span></div>'
+    cases = [
+        (card.format('Offline weekly offer', 'Free'), True),
+        (
+            card.format('Offline weekly offer', 'Free')
+            + card.format('Offline weekly offer', '$9.99'),
+            False,
+        ),
+        (card.format('Unapproved free offer', 'Free'), False),
+        ('<p>No cart cards rendered</p>', False),
+    ]
+    for html, permitted in cases:
+        await page.set_content(html)
+        try:
+            accepted = await namespace['_empty_cart'](None, page, allowed)
+        except ManualAction:
+            if permitted:
+                raise
+        else:
+            if not permitted or not accepted:
+                raise RuntimeError('Cart safety control did not match the local DOM')
 
 
 async def check_browser_startup():
@@ -81,17 +126,28 @@ async def check_browser_startup():
                 raise RuntimeError('Repository frame guard was not installed')
             if not profile.is_dir():
                 raise RuntimeError('Temporary persistent profile was not created')
+            await verify_cart_controls(page)
         if closed != [True] or not page.is_closed():
             raise RuntimeError('Browser context did not close normally')
     if temporary_path.exists():
         raise RuntimeError('Temporary profile was not removed')
-    print(json.dumps({
-        'status': 'passed', 'playwright': locked_version,
-        'launcher': 'services.browser_context.open_browser_context',
-        'headless_mode': 'virtual', 'page': 'about:blank and local HTML',
-        'frame_guard': 'installed', 'browser_context_closed': True,
-        'temporary_profile_removed': True, 'account_settings_loaded': False,
-    }), flush=True)
+    print(
+        json.dumps(
+            {
+                'status': 'passed',
+                'playwright': locked_version,
+                'launcher': 'services.browser_context.open_browser_context',
+                'headless_mode': 'virtual',
+                'page': 'about:blank and local HTML',
+                'frame_guard': 'installed',
+                'browser_context_closed': True,
+                'temporary_profile_removed': True,
+                'account_settings_loaded': False,
+                'cart_dom_controls': 'weekly free accepted; paid, unrelated and absent cards blocked',
+            }
+        ),
+        flush=True,
+    )
 
 
 if __name__ == '__main__':

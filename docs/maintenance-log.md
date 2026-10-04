@@ -1705,3 +1705,10 @@
 - 成功標準：即使未設定通知，也要取得領取前後訂單，以 `(namespace, offerId)` 確認每個當期 offer。前快照不可用則不開始領取；後快照不可用或還有未確認項目則流程失敗。成功記錄只列 weekly/newly_claimed/previously_claimed 計數。
 - 本機結果：Python AST、workflow YAML、內嵌 shell 語法及 `git diff --check` 通過；離線針對性檢查通過每日/分鐘 quota 分類、provider 次數、上游遞迴停止、CAPTCHA handler/solver 阻擋、零元/付費/新條款、当期免費優惠篩選、訂單精確比對與缺失快照、cookie 不可單獨判定登入。依 `AGENTS.md` 未執行測試套件，離線檢查沒有 Epic/LLM 請求或解驗證碼。
 - 限制與後續：瀏覽器啟動修正已在隔離 Linux run `37171987912` 通過；本批修補須在精確提交版本重新通過 Linux CI，再合併 master 並執行一次已批准正式流程。實際 CAPTCHA、新條款、Epic 24 小時限制仍可能阻止領取；Gemini 免費額度無法由程式提高，等待供應商重置，不變更付費方案或 API key。
+
+
+### 2026-10-04：購物車 DOM 檢查與正式執行狀態補記
+
+- Linux run `37173403944` 在提交 `3158b301` 通過離線停止條件與 Playwright 1.53.0/Xvfb 啟動關閉驗證；該提交已快轉合併 master。
+- 最後核對發現：Playwright 1.53.0 不會把 `.//span` 自動辨識為 XPath，因此購物車檢查須改為 `xpath=.//span`；相對查詢也避免從其他免費卡片誤取 Free 標記。修改 `app/services/epic_games_service.py`，並在 `scripts/check_browser_startup.py` 加入真實 Firefox 本機 DOM 驗證，涵蓋本週免費、混入付費、其他免費及卡片未呈現情況。
+- 正式 run 尚未觸發：瀏覽器控制連接器回傳 Transport closed；Mac Chrome 可開啟 workflow 頁面，但 AppleScript JavaScript 已關閉，osascript 沒有輔助使用權限。未變更安全設定、未建立 token、未登入 Epic、未解驗證碼、未讀取帳密/API secrets。剩餘動作為在新 master 手動觸發一次 epic-gamer.yml，再核對正式登入/訂單結果。
