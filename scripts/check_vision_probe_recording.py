@@ -123,7 +123,8 @@ async def verify(directory):
             attempt,
             probe.OfflineSession(),
             httpx.MockTransport(handler),
-            timeout=0.05 if hang else 2,
+            # Include local input/checkpoint work before the stalled-stream deadline.
+            timeout=2,
         )
         # Replay persisted evidence, not the in-process response or an invented answer.
         saved = json.loads((attempt.directory / 'record.json').read_text())
@@ -454,7 +455,7 @@ async def verify(directory):
     record = await case('stream_timeout_no_retry', sse(delta), hang=True)
     assert record['stream_error_type'] == 'CancelledError'
     assert record['failure_phase'] == 'response_stream'
-    assert not record['stream_exhausted'] and record['elapsed_seconds'] < 1
+    assert not record['stream_exhausted'] and record['elapsed_seconds'] < 3
     record = await case('connect_timeout_no_retry', b'', connect_timeout=True)
     assert record['http'] == {} and record['post_attempts'] == 1
     assert record['transport_error_type'] == 'ConnectTimeout'

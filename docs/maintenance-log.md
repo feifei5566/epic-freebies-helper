@@ -1834,3 +1834,12 @@
 - 修改檔案：.github/workflows/chatgpt-local-check.yml 只追加 master 至 push 分支與 job ref 條件；docs/maintenance-log.md 依 AGENTS.md 追加本紀錄。原有 contents read、checkout 不保留憑證、鎖版依賴與三個離線檢查及 lint／格式步驟維持原樣，未修改正式 provider、排程或其他程式。
 - 驗證與結果：合併前核對差異、祖先關係及所有 workflow 觸發條件；修正後須確認 YAML／差異、master push 只啟動隔離 CI，並正常更新遠端 master、核對最終 SHA、追蹤該 SHA 的 master push CI 至終態。此紀錄尚未將待執行 CI 宣稱成功；最終 SHA／run URL／79 項離線檢查結果另保存於工作目錄隔離驗證紀錄。
 - 限制：不執行 AGENTS.md 禁止的全套測試，不新增 OAuth／憑證，不登入 Epic、解 CAPTCHA、領取、觸發正式 workflow 或呼叫真實／付費模型。合成圖與離線 CI 結果不代表實際領取成功。
+
+
+## 2026-10-04：修正隔離串流逾時案例的 CI 時間競態
+
+- 症狀與證據：536c619d685050358c66b2e9f87e197579265f7f 已正常快轉合併 master；master push CI 37205381901 的全部步驟成功，但相同 SHA 的功能分支 CI 37205332904 在 stream_timeout_no_retry 案例的 calls == saved[post_attempts] == 1 斷言失敗。lint／格式及 20 項 OAuth 檢查均已通過，沒有真實模型或 Epic 請求。
+- 根因判斷：該離線案例把包含 inputs／原子 checkpoint 的整次 execute 期限縮為 50 毫秒；CI 負載下可能在 mock POST／response stream 前就耗盡時間，而案例要求驗證已進入串流後的取消。master 同碼成功與分支失敗顯示此超短 fixture 期限不穩定，不作為真實服務失敗或領取成功的判斷。
+- 修改檔案：scripts/check_vision_probe_recording.py 的離線案例統一使用既有兩秒期限，串流取消的 elapsed 上限改為三秒；docs/maintenance-log.md append-only 補記。仍保留一次 mock POST、零重試、response_stream phase、CancelledError、未讀完串流及 adapter replay 的嚴格斷言，未改寫或跳過案例。
+- 驗證與結果：須重新執行 44 項 recorder／replay 離線檢查、該檔 Ruff／Black／AST 與差異檢查，正常提交推送修正並對最新 master exact SHA 追蹤隔離 CI 至終態；最終證據保存於工作目錄隔離驗證紀錄。真實 probe 的 60 秒 deadline、正式 provider／排程與 Epic 程式均未改動，不執行全套測試、新 OAuth／憑證、真實模型、登入、CAPTCHA 或領取。
+- 本機修正結果：44 項 recorder／replay 離線案例通過；該檔 Ruff／Black、Python AST、git diff --check 通過，真實網路／OAuth／憑證讀取均為零。接續僅正常推送此修正並驗證新 master SHA。
