@@ -1731,3 +1731,97 @@
 - 行為與上限：每個登入流程從建立物件起共用三次 CAPTCHA wait 啟動及 300 秒固定期限。`invoke` 包住整個流程與所有頁面/登入重試，未重設 deadline/counter；False 經嚴格 helper 立即停止，不再重開批次。第一次清除 CAPTCHA 後只允許一次最多 30 秒的密碼表單呈現窗口，受全程 deadline 限制；缺表單則不可重試失敗，不把 CAPTCHA success 當成登入 success。每個結帳收集物件也共用三次 challenge wait 與既有 `TASK_TIMEOUT_SECONDS` 固定期限（預設 900 秒），包含 security/probe、重新建立 agent、cart、reconciliation 與外層 retry；全程超時取消，仍由訂單摘要核對部分/未完成結果。此上限計算 challenge wait，並非聲稱所有模型子請求只有三次；provider 個別請求的有限重試與每日額度熔斷仍保留。
 - 驗證結果：Python AST、修改行格式化、Ruff 靜態檢查、`git diff --check` 通過。離線實際控制函式驗證 False 停止、換頁/登入重試共用三次、三次用完後新批次或新 agent 不再呼叫 challenge、success 但缺密碼表單在窗口內失敗、全程超时與卡住的 challenge 被取消、已過期預算不開始工作；所有 production wait 均帶入 owning budget。既有預設 false 的單次 input、CAPTCHA 阻擋、每日/分鐘 quota 分類、零元/新條款保護及精確訂單證據檢查繼續通過。沒有執行測試套件，沒有 Epic/LLM 請求或實際解題。
 - 尚缺證據與外部限制：當時密碼頁 DOM/可見控制狀態不足以判定 CAPTCHA success 後表單缺失的具體原因；不改寫按鈕/密碼選擇器、不猜測根因。Gemini 額度不能由程式提高，仍需等供應商重置；後續真實 CAPTCHA/登入/免費領取須另有新的單次授權，不能重跑使用舊 SHA 的 #69 來驗證本修補。
+
+
+## 2026-10-04：新增本機可選的 ChatGPT 訂閱 OAuth provider 原型
+
+- 症狀與根因判斷：瀏覽器啟動與共用重試預算修正後，既有正式領取仍缺成功訂單證據；Gemini 真正每日額度無法由程式提高。使用者同意以 Mac 本機、ChatGPT 訂閱作為新的可選模型來源；此實作不代表已解決 Epic 登入／CAPTCHA 辨識或實際領取。
+- 基準與授權範圍：開始時 checkout 乾淨，已 fetch 並核對 HEAD／遠端 master 為 `5575e2eae51f87fa492e7516d175a51d274333a5`；另建本機 `codex/chatgpt-oauth-local` 分支。僅修改與離線驗證；不推送／合併、不改正式排程、不進行真實 OAuth、模型推論、Epic 登入、CAPTCHA 或領取。
+- 官方協定：依 [Sign in](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)、[Accounts and sessions](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions)、[Models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)、[Preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations) 及 [cookbook](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt) 核對。新連線使用 `dynamic_agent_client`、穩定 UUID host ID、loopback、state／nonce／PKCE；保留 callback issued client ID 並用公開 token endpoint 交換。ID token 依官方 discovery／JWKS 驗證 RS256 簽章、issuer、audience、nonce、期限及 subject；回傳 granted scopes 必須有 `resource.invoke` 與 `chatgpt.tokens.use.direct` 才可推論。普通重新登入不強制 consent，只有使用者明確加 `--enable-plan-usage` 才送 OAuth `prompt=consent`。
+- 修改檔案：新增 `app/extensions/chatgpt_oauth.py`、`chatgpt_provider.py`、`scripts/chatgpt_login.py`、`check_chatgpt_oauth.py`、`docs/chatgpt-local-oauth.md`；修改 `app/settings.py`、`extensions/llm_adapter.py`、`README.md`、`pyproject.toml`／`uv.lock` 及本維護紀錄。cryptography 沿用 lock 中既有 `46.0.7`，僅列為直接依賴，未更新其他套件版本。
+- 行為與憑證：新增明確 `LLM_PROVIDER=chatgpt`、profile／model／timeout；保留 Gemini／GLM。上游 Gemini 欄位僅填公開非憑證 sentinel，OAuth adapter 不使用 API key、Codex auth.json 或瀏覽器 cookies，也不自動改計費路徑。本機自有目錄 `0700`、檔案 `0600`、原子寫入、分 profile 加鎖刷新並替換 rotating token；終止性 refresh 拒絕清除 tokens，暫時錯誤停止請求且保留憑證。登出嘗試官方 discovery 撤銷端點後清除 tokens，遠端未確認時明確回報並引導 ChatGPT Settings，保留 client／身份與 host ID。
+- 推論：僅使用公開 `POST /v1/responses`、`store=false`、`stream=true` 與 input array／instructions；本機圖片改為 input_image data URL，未呼叫 Files upload。Gemini 不相容參數不轉送；只有完整 completed 事件、非空文字及有效 Pydantic JSON schema 才回傳。用量上限／資格／scope／模型拒絕停止，SSE 的失敗、不完整、中斷與拒絕不採用部分答案；暫時模型錯誤沿用最多兩次 provider 嘗試。遇到 GITHUB_ACTIONS=true 直接拒絕，本機 OAuth 不上傳至正式排程。
+- 驗證結果：15 項新 provider 的離線針對性檢查通過，涵蓋假資料 PKCE／listener／ID token、重新登入身份不可替換、callback 拒絕、scope 不足、明確 reconsent、到期／並行刷新、撤銷、暫時錯誤保留、檔案權限／symlink、圖片 payload、完整／不完整／quota SSE、API key 不回退及 Actions 禁止。既有 15 項 runtime controls 也通過；所有檢查禁止真實網路，未載入 settings／.env 或既有憑證。Python AST、Ruff（既有修改檔也無新增診斷）、Black 新檔／修改行格式、CLI help、TOML lock 一致性及 git diff --check 通過；依 AGENTS.md 未執行測試套件。
+- 限制與人工下一步：尚未執行真實 OAuth／推論，因此沒有證明使用者／workspace 資格、圖片／座標准确率或領取成功。模型目錄不是推論權限證據；ChatGPT 訂閱也有用量限制。使用者須親自執行登入指令並在官方瀏覽器頁同意，詳見新文件；本機 Epic 瀏覽器與完整環境尚未重新驗證。正式 workflow／登入與結帳程式未修改，既有 Gemini 額度問題仍在。離線結果及完整本機差異另保留於工作目錄隔離驗證資料。
+
+
+## 2026-10-04：第一次受限的真實訂閱合成圖推論及安全格式診斷
+
+- 症狀與授權：使用者自行使用帳號完成 app 授權後，公開 status 回傳 `personal` connected／plan_usage_enabled true、access token 未過期，模型目錄讀取成功；沒有讀出 token、身份資訊或變更 workspace／client／host 綁定。使用者其後明確批准一次少量訂閱圖片推論，不涉及 Epic 登入、CAPTCHA 或領取。
+- 選模與輸入：依 [官方 Luna 模型文件](https://developers.openai.com/api/docs/models/gpt-5.6-luna) 與已授權模型目錄的 input_modalities／supported_reasoning_levels，選 `gpt-5.6-luna`、low reasoning。用標準函式庫繪製並檢視不含個資的 256×192 紅方形／藍圓形 PNG，939 bytes，SHA256 `4fbb440df62760c75ee1272a30f9c8fa0fddce17f2a395ff8b17e99b0cb32636`；不是實際 CAPTCHA。直接呼叫實作 `LocalFiles`／`ChatGPTModels.generate_content`，僅在本次 client 的 payload 加 low reasoning／image detail，保持 stream=true／store=false；不載入 Epic settings、不更改 `.env` 或正式排程。
+- 真實結果：一次 Responses POST 嘗試，零重試，60 秒上限及 exclusive marker 防止重複執行。約 1.91 秒後停止，原 adapter 報 `ChatGPT response was not an SSE stream`。依該分支確認 HTTP 200，但未保存實際 Content-Type 或 body，沒有 completed／schema 結果／usage。無法判定是否已扣用量，也不能聲稱訂閱推論或圖片辨識成功；沒有追加請求或切換模型。
+- 根因判斷：已確認本機格式檢查阻擋回覆；原檢查使用大小寫敏感的字串判斷，且錯誤缺少安全 metadata，不足以區分合法 MIME 大小寫差異、非 SSE JSON 或其他回覆。沒有證據判定哪一種是本次實際原因，不推定授權拒絕或模型不支援圖片。
+- 修改檔案：`app/extensions/chatgpt_provider.py` 改以大小寫不敏感的 MIME type 判斷並忽略參數；非 SSE JSON 消費後僅回報既有安全 HTTP／code／param／body shape／request ID 摘要，quota 仍保留原停止分類，其餘格式不符為不可重試配置錯誤。`scripts/check_chatgpt_oauth.py` 增加兩項離線檢查；`docs/chatgpt-local-oauth.md` 與本維護紀錄補記。隔離 probe 腳本另加入只擷取 status／media type／request ID 的 response hook，未再次執行。
+- 離線驗證與限制：17 項 provider 針對性檢查通過，新增大小寫／charset SSE 接受與 HTTP 200 非 SSE JSON 的安全停止，確認錯誤不含 body／fake token。未執行測試套件、真實 OAuth 重登／擴權、Epic、CAPTCHA 或領取。第一次單次授權已使用；若要確定格式修正是否解決實際服務回覆，需再明確批准一次同圖／同模型的受限請求。既有 Gemini 額度與 Epic 成功率仍未解決或驗證。
+
+
+## 2026-10-04：第二次單次驗證確認 media type 不可辨識但內容為完整 SSE
+
+- 症狀與授權：使用者另行批准「繼續」一次同圖推論。先確認 Mac 實際可連線、`codex/chatgpt-oauth-local` 與既有變更保留、第一次 marker／失敗結果存在，第二次 marker／結果不存在。公開 status 顯示 connected／plan_usage_enabled true、access token expired true；透過既有 session 進入 adapter，沒有另開登入／擴權、修改 workspace／host／client 綁定或 API key 回退。
+- 真實請求：同一個 256×192、939-byte 合成 PNG，SHA256 不變；`gpt-5.6-luna`、low reasoning／image detail，60 秒模型請求上限、零重試。本次只有一個 Responses POST 嘗試，第二次獨立 exclusive marker 與原子 checkpoint 保留狀態；約 8.63 秒後完成，工具連線及結果恢復正常，沒有因斷線重送。累計兩次分别批准的 POST 嘗試，沒有第三次。
+- 確切回覆：HTTP 200，Content-Type 的安全摘要為 unknown（未保存原始 header，不能區分缺失與不符合摘要格式）；body 確認為 framed SSE text。安全事件種類包含 response.created／in_progress、output_item.added／done、content_part.added／done、output_text.delta／done、response.completed。buffered completed response status 為 completed，用量 input 377、output 212、total 589、cached 0、reasoning 164；reasoning 已含於 output，不另加總。
+- 成功範圍與未完成部分：同一個既有 OAuth 訂閱請求确有模型完成回覆及 usage。當時 adapter 在 media type 檢查停止，未產生 app 的 parsed result；診斷用 buffered schema 擷取亦未通過，原始回答未保存，因此不能判定具體 JSON 失敗原因或圖片／座標是否正確。不得把模型 completed 當成 app schema／Epic 領取成功。
+- 根因與修改檔案：已確認 Content-Type 的單一判斷拒絕了確實含完整 SSE frames 的回覆。修改 `app/extensions/chatgpt_provider.py`：不具可辨識 media type 時讀取回覆，只有符合 SSE framing 才進既有嚴格事件解析；仍必須 completed／有效輸出及 schema，不接受一般 JSON 作成功或用部分答案。修改 `scripts/check_chatgpt_oauth.py` 增加兩項針對性離線檢查、`docs/chatgpt-local-oauth.md` 與本紀錄；未更改正式設定或排程。
+- 驗證與限制：19 項 provider 離線檢查通過，新增缺 media type 的完整 SSE 可通過 schema、缺 completed 的同類部分串流仍失敗；所有檢查零真實網路。新增隔離 probe 的安全記錄也已以假回覆確認不保存 token／cookies／raw body。沒有執行測試套件或修正後追加真實推論，完整 app 圖片／JSON 路徑尚待證明；Epic、CAPTCHA、領取及 Gemini 額度問題保持未驗證或未解決。第二次結果與 marker 已保存，恢復連線後應核對既有結果，勿重送。
+
+
+## 2026-10-04：離線重播稽核確認實際模型原文與驗證錯誤未保存
+
+- 症狀與範圍：要求只用第二次既有回覆重播，禁止新網路／模型／OAuth／Epic 動作。核對已保存的 result／diagnosis、安全檔案清單與 probe 寫入程式後，確認只有事件種類、completed／usage 摘要與 schema false，沒有模型 output、delta／done 文字、completed 的 response.output 或實際 validation error，故不能重播該次回覆。
+- 根因判斷：隔離 `observe_buffered_body` 只在 ImageReport 驗證成功時保存 parsed 結果；失敗時捕捉 ValueError／TypeError／AttributeError，僅寫 buffered_schema_validated=false，沒有保存 answer 或錯誤細節。這是記錄方式的缺漏，無法由現有 metadata 還原或判定是模型未遵循 schema、JSON 格式、字段／座標類型、refusal 或 output 擷取問題。
+- 靜態比較與既有證據：prompt 要求原圖 256×192 的形狀／顏色與整數中心座標，schema 為 shapes 陣列及 color／shape／center_x／center_y。繪圖 groundtruth 為紅色方形幾何中心 (63.5,63.5)，預期四捨五入 (64,64)，藍色圓形中心 (184,128)。實際 completed_response 忽略 delta，僅擷取最後 completed 的 response.output，沒有把 delta 再加上 completed 文字的程式路徑；仍缺實際 payload，不能驗證事件文字內容或與 groundtruth 比對。589 tokens 與 completed 只證明當次模型回覆完成。
+- 結果與限制：另保存安全 offline-vision-replay-audit.json，明確標記 replay_possible=false。沒有捏造回覆、放寬 schema、硬編碼通過結果或對缺乏證據的 runtime parser 追加修正；沒有執行測試套件或任何新網路請求。圖片／座標／JSON 正確性及 adapter 真實可用性保持未確認，本次不重請求。
+
+
+## 2026-10-04：修復專用合成圖 probe 的安全紀錄與同 adapter 離線重播
+
+- 症狀與範圍：第二次真實推論有 completed／589 tokens，但舊 probe 在 schema 失敗時丟棄模型文字和具體 validation error，只留下 false，無法追溯。本輪只修復診斷設計和執行針對性離線驗證；恢復 Mac 後確認上次寫入沒有落盤，保留現有 codex/chatgpt-oauth-local 工作樹。
+- 根因判斷：紀錄必須在 schema 驗證之前保存允許的模型 payload；只保存成功 parsed 結果與事件種類不足以辨別 JSON、欄位、座標或 refusal 問題。不能由既有 metadata 還原那次回答，也不能以 groundtruth 或 fake fixture 補作真實模型輸出。
+- 修改檔案：新增 scripts/probe_chatgpt_vision.py、scripts/check_vision_probe_recording.py；追加 docs/chatgpt-local-oauth.md 及本維護紀錄。正式 app/extensions/chatgpt_provider.py、OAuth、provider 設定、Epic 流程與 workflows 均未修改。
+- 行為：固定同一 SHA256 的合成 PNG、提示詞與模型；新 attempt 目錄 0700、marker／逐 frame 原子紀錄 0600，單 POST／零重試／60 秒模型期限，已用目錄或物件不得重送。只記錄允許的脫敏回覆 payload、output_text／JSON／refusal／failed／incomplete、HTTP status／Content-Type／解碼方式／數字 usage；不保存 auth headers、cookies、身份 metadata、原始 body，未知 HTML／純文字直接省略。分段文字敏感值合併檢查；脫敏／超長資料拒絕完整重播。production 不引入 recorder。
+- 解析與錯誤：重播從落盤 JSON 建立 mock HTTP，實際走 ChatGPTModels.generate_content → completed_response → 嚴格 ImageReport.model_validate_json；診斷也用相同 completed_response 擷取。無效答案保留原文字／可解析 JSON，以及 error type／loc／message、expected vs actual；要求嚴格整數、座標邊界和既有 JSON 結構，不自動修補答案。schema 通過與 groundtruth 座標比較分別記錄，原答案不被替換。
+- 驗證結果：32 項針對性離線案例全部通過，結果位於 ../.verification/vision-probe-offline-4/offline-result.json，各案例另保存 record／replay。涵蓋有效／無效 schema、wrong coordinates、structured JSON、缺 completed／不完整 frame／incomplete／refusal／failed、delta 重疊、缺 Content-Type SSE、non-SSE／429、UTF-8 分段及 charset 一致性、連線／串流 timeout 與零重試、headers／metadata 排除、脫敏／篡改／上限拒絕、marker／權限／重送阻擋。socket／DNS 明確封鎖，OAuthSession 與 CredentialStore 建立／取 token 均被 verifier 阻擋；真實網路、OAuth、憑證讀取和模型請求均為零。未執行測試套件；Python AST、Ruff、Black 和 git diff --check 通過。
+- 限制與下一步：不能恢復舊回覆，尚未驗證真實服務的 JSON／座標準確率。本輪沒有新增 live 模型／OAuth／Epic／CAPTCHA／領取動作，也未推送／合併或改正式排程。下一次需新的明確單次批准：同圖同模型 low 設定、personal 既有會話（必要的標準刷新須包括在批准範圍）、一個 POST／60 秒模型期限／零重試，使用新的 immutable attempt marker，事後只離線重播。Gemini 額度與 Epic 成功訂單仍未由此修復或證明。
+
+
+補充最終驗證：`../.verification/vision-probe-offline-5/offline-result.json` 的 32 案例全部通過；connection timeout 保存 `ConnectTimeout`／before_response_headers，stream timeout 保存 `CancelledError`／response_stream，均只有一個 mock POST、零重試。CLI 從落盤的 invalid_integer_string record 重播，正確再現 schema failure，loc 為 shapes[0].center_x、expected integer／0..255、actual 字串 "64"，沒有模型／OAuth／真實網路或憑證讀取。Python AST、Ruff、Black、git diff --check 均通過。
+
+
+## 2026-10-04：第三次單次合成圖測試與 completed 空 aggregate 的離線修復
+
+使用者重新批准同圖、gpt-5.6-luna、low reasoning／image detail、一個 inference POST、60 秒總期限與零重試。先確認 third-live-vision-probe 目錄和 marker 均不存在，並把專用 probe 的外層期限涵蓋既有 personal session 操作；32 項離線案例重新通過後才執行。沒有另開 OAuth grant、讀出／輸出憑證、Epic／CAPTCHA／領取、付費 API fallback 或 commit／push。
+
+本次確定只有一個 inference POST，約 7.0664 秒，HTTP 200、Content-Type 確認缺失（null／present=false），SSE exhausted 且 response.completed status=completed。用量 input 389、output 28、total 417、cached 0、reasoning 0。原 adapter 報 Completed ChatGPT response contained no output text：最終 completed 的 output=[]，但先前 output_text.done、content_part.done、output_item.done 的相同 JSON 均已保存，item status=completed。原 record 與 replay-before 保留失敗事實，沒有重送。
+
+離線修改 app/extensions/chatgpt_provider.py：僅在有效 response.completed 的 aggregate 明確為空時，使用之前已閉合的 assistant item／part／text DONE markers 還原；要求索引、completed status、marker 集合和文字一致，不使用 delta 作答案。缺 marker、item 未完成、衝突或未完成 terminal 均停止，refusal 繼續拒絕。scripts/probe_chatgpt_vision.py 診斷標記實際答案來源，scripts/check_vision_probe_recording.py 增加 11 項針對性案例，合計 43 項離線案例通過，AST／Ruff／Black／git diff --check 亦通過，未執行測試套件。
+
+從未改寫的 record.json 再跑實際 adapter 離線 replay-after：嚴格 JSON／schema 通過。實際答案只有 blue circle，中心 (184,128) 正確，漏掉 red square，完整 groundtruth 比較為 false；不插入缺失形狀或改写答案，因此本次不能算完整圖片辨識通過。修正後沒有追加 live 推論。結果位於 ../.verification/third-live-vision-probe/final-result.json，原 record、replay-before／after、marker 和模型目錄核對分開保存。
+
+使用者另問 gpt-6.1-sol：Luna 單次請求已完成，故只用既有 personal OAuth 唯讀 GET 官方 /v1/models 一次，沒有第二次 inference。HTTP 200，所有回傳模型中均未找到精確 slug gpt-6.1-sol；可列出 gpt-6-astra、gpt-5.6-sol、gpt-5.6-terra、gpt-5.6-luna、gpt-5.5。這個 profile 目前無法確認 gpt-6.1-sol 的資格或圖片能力，不猜別名、不更改訂閱 provider／正式排程或程式任務的 agent 模型。任何下一次推論仍需新的單次批准。
+
+
+## 2026-10-04：精確 gpt-6.1-sol 的新單次推論獲官方 API 接受
+
+- 授權與範圍：使用者明確要求，即使模型列表未列出也直接用精確 gpt-6.1-sol 測同一非私人 256×192 合成圖。這是新的一次授權；先確認 gpt-6-1-sol-live-probe 目錄／marker 尚不存在，不重跑 Luna attempt。只用既有 personal 訂閱 OAuth、low reasoning／image detail、一個 inference POST、60 秒總期限、零重試；不新建 grant、不讀出／輸出憑證、不 fallback 模型或付費 API、不執行 Epic／CAPTCHA／領取或 commit／push。
+- 修改：scripts/probe_chatgpt_vision.py 的專用 probe 支援明確 --model gpt-6.1-sol；contract／payload／replay 保留精確 slug，預設 Luna 及舊紀錄重播保持可用，未更改正式 provider／排程。scripts/check_vision_probe_recording.py 新增精確 slug 不回退案例，合計 44 項離線案例通過；AST／Ruff／Black／git diff --check 通過，未執行測試套件。本轮未再修改 parser。
+- 真實服務證據：只發出一個 inference POST，約 5.4996 秒；HTTP 200、Content-Type 缺失、response.completed status=completed，回傳 model 精確為 gpt-6.1-sol。用量 input 389、output 86、total 475、cached 0、reasoning 38（已含於 output 86）。因此先前目錄未列出不能作為該模型不可推論的結論；本次 API 確實接受且完成。
+- 答案与驗證：原模型答案完整列出 red square (64,64)、blue circle (184,128)；嚴格 JSON／schema、完整形狀集合及座標 groundtruth 比對全部通過。仍使用先前已離線修好的 matching item／part／text DONE markers 加 response.completed 擷取，不採用 delta 或插入 groundtruth 答案。去敏事件、模型文字／JSON、HTTP／usage、schema／coords 均已保存；磁碟離線 replay 再走實際 adapter，結果與原 live record 完全一致，沒有額外推論。
+- 保存與限制：獨立目錄 ../.verification/gpt-6-1-sol-live-probe/ 內保留 attempted.json、record.json、replay.json、final-result.json；record 不改寫。這證明本次該 profile／模型的合成圖路徑可用，不代表 Epic／CAPTCHA／完整領取已驗證，也未把正式 CHATGPT_MODEL 配置改成此值。本次單次授權已使用完，不重送。
+
+
+## 2026-10-04：本機訂閱模式預設模型改為 gpt-6.1-sol
+
+- 授權與症狀：使用者在精確 gpt-6.1-sol 合成圖／schema／座標／adapter replay 成功後，同意將本機訂閱模式的預設模型設成該 slug。原 CHATGPT_MODEL 預設為空，未設定時會配置錯誤。
+- 修改檔案：app/settings.py 將 CHATGPT_MODEL 的 Field default 由空字串改成 gpt-6.1-sol；空模型提示改為要求 nonempty slug，沒有把官方模型目錄作 allowlist。scripts/check_chatgpt_oauth.py 同步原本「省略模型應失敗」的離線 assertion；docs/chatgpt-local-oauth.md 更新預設、範例與 override 說明，並追加本維護紀錄。沒有更改 LLM_PROVIDER、CHATGPT_PROFILE、provider 啟用方式、正式 workflows 或 probe 的固定測試預設。
+- Override 與有效值：開始時本機 .env 不存在，影響選模的環境變數均未設定。LLM_PROVIDER=chatgpt 且未提供模型時，解析後 CHATGPT_MODEL=gpt-6.1-sol，CHALLENGE_CLASSIFIER_MODEL／IMAGE_CLASSIFIER_MODEL／SPATIAL_POINT_REASONER_MODEL／SPATIAL_PATH_REASONER_MODEL 均為同值。明確的 CHATGPT_MODEL 或任務欄位 override 保留，未硬編碼改寫使用者指定；優先順序為 constructor > environment > dotenv > Field default，空環境值沿用既有 env_ignore_empty 規則。
+- 離線驗證：14 項針對性設定解析檢查通過，涵蓋預設及四路繼承、其他模型、每個任務 override、環境／純模型 fake dotenv／constructor 優先順序、空／空白值和 Gemini／GLM 原有路由。由實際 EpicSettings class／validators 與 Pydantic sources 解析；從已有 hcaptcha-challenger 0.19.0 wheel 核對／擷取相關設定與 validator，不下載或啟動 app。socket／DNS 封鎖，使用清空環境的隔離 Python，不讀真實 .env、API secrets 或 OAuth 憑證。結果 ../.verification/chatgpt-model-default-result.json；Python AST、Ruff、Black、git diff --check 通過，未執行全套測試或既有 OAuth mock suite。
+- 範圍與結果：僅修改本機 prototype 的模型預設設定及相關說明／assertion；零推論、OAuth、Epic／CAPTCHA／領取請求，無新增 grant、commit／push、正式 provider 切換或部署。先前真實模型 probe 結果保持不變。
+
+
+## 2026-10-04：審查並準備發佈本機訂閱 OAuth prototype 功能分支
+
+- 授權與範圍：使用者要求 commit 後推上去並測試。核對目前為 codex/chatgpt-oauth-local，HEAD／遠端 master 均為 5575e2e，遠端尚無同名功能分支。保留這批已批准的 OAuth／parser／診斷／gpt-6.1-sol 預設改動，不 merge master、不執行正式 Epic／LLM／OAuth grant 或付費 fallback。
+- 審查與必要修正：README 更新為已有一次真實合成圖／JSON／座標／adapter 成功證據、Epic 領取未驗證；check_chatgpt_oauth.py 補入四個任務路由的預設與明確 override 檢查。核對已緩存 hcaptcha-challenger 0.19.0 的 upload／Content／generate_content 接口與 adapter 相符。此次不改正式 workflows、Epic 流程或 active provider。
+- 隔離 CI：新增 .github/workflows/chatgpt-local-check.yml，只在此功能分支 push 且 repo/ref/event 精確相符時執行，contents read、checkout 不保留憑證、Python 3.12、僅安裝 uv.lock 指定版本及 wheel hashes 的必要工具。只跑既有 fake OAuth／model routing、synthetic recorder／actual adapter replay 和 runtime stopping checks；各程式封鎖真實 socket，無 Epic／模型／真實 OAuth 憑證、login 或 live-once。現有 browser startup 只綁其他分支；正式 Epic 只接受 schedule／manual，Docker 只接受 release，不因本次 push 啟動。
+- 本機驗證：20 項 OAuth／設定、44 項 recorder／replay、15 項既有 runtime control 通過；Ruff、Black（新檔與 settings）、AST、TOML lock／CI requirements、workflow trigger／permissions 靜態檢查及 git diff --check 通過。沒有執行全套測試，沒有新增 live 模型／OAuth／Epic 請求。
+- 發佈資料：明確限制 staging 為 14 個本功能程式／說明／workflow 檔案，檢查新增內容無實際 token／JWT／private key／email 或 Mac 使用者路徑；源碼中的協定欄位、正則與 fake fixture 值保留。所有本機 .verification／OAuth credentials／cookies／runtime files 均不進 Git。commit／push 與 exact-SHA CI 結果在此紀錄之後核對，未先宣稱 CI 成功。

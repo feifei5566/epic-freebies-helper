@@ -51,7 +51,13 @@ class EpicSettings(AgentConfig):
 
     GEMINI_MODEL: str = Field(default="gemini-2.5-pro", description="Gemini default model")
 
-    LLM_PROVIDER: str = Field(default="", description="Supported values: gemini, glm")
+    LLM_PROVIDER: str = Field(default="", description="Supported values: gemini, glm, chatgpt")
+
+    CHATGPT_PROFILE: str = Field(default="default", description="Local SIWC registration label")
+    CHATGPT_MODEL: str = Field(
+        default="gpt-6.1-sol", description="Default local subscription model; may be overridden"
+    )
+    CHATGPT_REQUEST_TIMEOUT_SECONDS: float = Field(default=90.0, gt=5.0, le=120.0)
 
     GLM_API_KEY: SecretStr | None = Field(default=None, description="GLM API key")
 
@@ -112,6 +118,12 @@ class EpicSettings(AgentConfig):
         data = dict(raw_data) if isinstance(raw_data, dict) else {}
 
         provider = str(data.get("LLM_PROVIDER") or "").strip().lower()
+        if provider == "chatgpt":
+            data["LLM_PROVIDER"] = provider
+            # Upstream AgentConfig requires a nonempty Gemini field. This is a public
+            # sentinel, never a credential; the OAuth adapter replaces genai.Client.
+            data["GEMINI_API_KEY"] = "chatgpt-oauth-adapter"
+            return data
         glm_key = _coerce_secret_input(data.get("GLM_API_KEY"))
         gemini_key = _coerce_secret_input(data.get("GEMINI_API_KEY"))
 
@@ -131,6 +143,8 @@ class EpicSettings(AgentConfig):
             "GEMINI_BASE_URL",
             "GEMINI_MODEL",
             "LLM_PROVIDER",
+            "CHATGPT_PROFILE",
+            "CHATGPT_MODEL",
             "GLM_BASE_URL",
             "GLM_MODEL",
             "BROWSER_BACKEND",
@@ -145,14 +159,18 @@ class EpicSettings(AgentConfig):
                 setattr(self, field_name, value.strip())
 
         provider = (self.LLM_PROVIDER or "").strip().lower()
-        if provider not in {"gemini", "glm"}:
+        if provider not in {"gemini", "glm", "chatgpt"}:
             provider = "glm" if self.GLM_API_KEY else "gemini"
         self.LLM_PROVIDER = provider
 
-        if self.GEMINI_API_KEY is None and self.GLM_API_KEY is not None:
+        if provider != "chatgpt" and self.GEMINI_API_KEY is None and self.GLM_API_KEY is not None:
             self.GEMINI_API_KEY = self.GLM_API_KEY
 
-        provider_default = self.GLM_MODEL if provider == "glm" else self.GEMINI_MODEL
+        provider_default = (
+            self.CHATGPT_MODEL
+            if provider == "chatgpt"
+            else self.GLM_MODEL if provider == "glm" else self.GEMINI_MODEL
+        )
         if not self.CHALLENGE_CLASSIFIER_MODEL:
             self.CHALLENGE_CLASSIFIER_MODEL = provider_default
         if not self.IMAGE_CLASSIFIER_MODEL:
@@ -182,6 +200,16 @@ class EpicSettings(AgentConfig):
     @property
     def llm_configuration_error(self) -> str | None:
         provider = (self.LLM_PROVIDER or "").strip().lower()
+
+        if provider == "chatgpt":
+            if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
+                return "ChatGPT OAuth is local-only; do not upload OAuth credentials to Actions."
+            if not self.CHATGPT_MODEL:
+                return (
+                    "Set CHATGPT_MODEL to a nonempty model slug for the selected ChatGPT profile."
+                )
+            if not self.CHATGPT_PROFILE:
+                return "Set CHATGPT_PROFILE to a local ChatGPT registration label."
 
         if provider == "glm" and self.GLM_API_KEY is None:
             return (

@@ -1382,6 +1382,19 @@ def apply_llm_patch(settings: Any):
     if not _limit_llm_provider_attempts():
         raise RuntimeError('LLM provider retry budget could not be configured')
     provider = settings.LLM_PROVIDER.lower()
+    if provider == "chatgpt":
+        from extensions.chatgpt_provider import apply_chatgpt_patch
+        from extensions.runtime_failures import EpicLlmConfigurationError
+
+        if settings.llm_configuration_error:
+            raise EpicLlmConfigurationError(settings.llm_configuration_error)
+        apply_chatgpt_patch(settings)
+        logger.info(
+            "ChatGPT plan provider selected | local profile={} | model={}",
+            settings.CHATGPT_PROFILE,
+            settings.CHATGPT_MODEL,
+        )
+        return
     if provider == "glm":
         if not settings.GLM_API_KEY:
             logger.error("LLM provider misconfigured | LLM_PROVIDER=glm but GLM_API_KEY is empty")

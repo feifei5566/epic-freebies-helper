@@ -1,0 +1,68 @@
+name: Isolated ChatGPT OAuth Checks
+
+on:
+  push:
+    branches:
+      - codex/chatgpt-oauth-local
+
+permissions:
+  contents: read
+
+jobs:
+  offline-checks:
+    if: github.repository == 'feifei5566/epic-freebies-helper' && github.ref == 'refs/heads/codex/chatgpt-oauth-local' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install only locked offline-check dependencies
+        run: |
+          python - <<'PY'
+          import pathlib
+          import tomllib
+
+          names = {
+              'annotated-types', 'anyio', 'black', 'certifi', 'cffi', 'click',
+              'cryptography', 'greenlet', 'h11', 'httpcore', 'httpx', 'idna',
+              'loguru', 'mypy-extensions', 'packaging', 'pathspec', 'platformdirs',
+              'playwright', 'pycparser', 'pydantic', 'pydantic-core', 'pydantic-settings',
+              'pyee', 'python-dotenv', 'pyyaml', 'ruff', 'sniffio', 'tenacity',
+              'typing-extensions', 'typing-inspection',
+          }
+          packages = tomllib.loads(pathlib.Path('uv.lock').read_text())['package']
+          requirements = []
+          for package in packages:
+              if package['name'] in names:
+                  hashes = ' '.join('--hash=' + wheel['hash'] for wheel in package['wheels'])
+                  requirements.append(f"{package['name']}=={package['version']} {hashes}")
+                  names.remove(package['name'])
+          if names:
+              raise RuntimeError(f'Missing locked dependencies: {sorted(names)}')
+          pathlib.Path('/tmp/chatgpt-offline-requirements.txt').write_text(
+              '\n'.join(requirements) + '\n'
+          )
+          PY
+          python -m pip install --only-binary=:all: --require-hashes -r /tmp/chatgpt-offline-requirements.txt
+
+      - name: Check changed Python files
+        run: |
+          python -m ruff check app/extensions/chatgpt_oauth.py app/extensions/chatgpt_provider.py app/extensions/llm_adapter.py app/settings.py scripts/chatgpt_login.py scripts/check_chatgpt_oauth.py scripts/probe_chatgpt_vision.py scripts/check_vision_probe_recording.py
+          python -m black --check app/extensions/chatgpt_oauth.py app/extensions/chatgpt_provider.py app/settings.py scripts/chatgpt_login.py scripts/check_chatgpt_oauth.py scripts/probe_chatgpt_vision.py scripts/check_vision_probe_recording.py
+
+      - name: Verify OAuth and model routing with fake credentials only
+        run: python -B scripts/check_chatgpt_oauth.py
+
+      - name: Verify synthetic recording and actual adapter replay offline
+        run: python -B scripts/check_vision_probe_recording.py --output-directory "$RUNNER_TEMP/vision-probe-fixtures"
+
+      - name: Verify existing runtime stopping rules offline
+        run: python -B scripts/check_runtime_controls.py
