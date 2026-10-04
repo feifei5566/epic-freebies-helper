@@ -1712,3 +1712,12 @@
 - Linux run `37173403944` 在提交 `3158b301` 通過離線停止條件與 Playwright 1.53.0/Xvfb 啟動關閉驗證；該提交已快轉合併 master。
 - 最後核對發現：Playwright 1.53.0 不會把 `.//span` 自動辨識為 XPath，因此購物車檢查須改為 `xpath=.//span`；相對查詢也避免從其他免費卡片誤取 Free 標記。修改 `app/services/epic_games_service.py`，並在 `scripts/check_browser_startup.py` 加入真實 Firefox 本機 DOM 驗證，涵蓋本週免費、混入付費、其他免費及卡片未呈現情況。
 - 正式 run 尚未觸發：瀏覽器控制連接器回傳 Transport closed；Mac Chrome 可開啟 workflow 頁面，但 AppleScript JavaScript 已關閉，osascript 沒有輔助使用權限。未變更安全設定、未建立 token、未登入 Epic、未解驗證碼、未讀取帳密/API secrets。剩餘動作為在新 master 手動觸發一次 epic-gamer.yml，再核對正式登入/訂單結果。
+
+
+## 2026-10-04：本次手動 CAPTCHA 授權採用預設關閉的 dispatch 參數
+
+- 症狀與正式證據：run `37174612038`（#68，提交 `aa25d7d4`）已成功啟動 Playwright，登入等待密碼時偵測 hCaptcha，依 `ALLOW_CAPTCHA_SOLVING=false` 與 `EpicCaptchaRequiredError` 正確停止，尚未領取。使用者其後明確批准本次登入/免費領取遇到的 CAPTCHA 及一次重跑。
+- 根因判斷：前次正式執行停在授權範圍保護，無需永久打開自動解題。新增 `.github/workflows/epic-gamer.yml` 的 `workflow_dispatch.inputs.allow_captcha_solving` 布林參數，預設 false；僅在手動事件且本次 input 為 true 时將該 run 的 `ALLOW_CAPTCHA_SOLVING` 設為 true。程式設定預設、之後排程與未勾選的手動執行均保持 false。
+- 修改檔案：`.github/workflows/epic-gamer.yml`、`.github/workflows/browser-startup-check.yml`（加入鎖版 PyYAML 至隔離檢查依賴）、`scripts/check_runtime_controls.py`、本維護紀錄。相關語法按 GitHub 官方 workflow_dispatch typed inputs 與表達式文件核對。
+- 驗證結果：離線檢查確認布林型別、預設 false、限定手動事件與本次 input、程式預設未改；授權模式會把 response handler 委派至上游，未授權模式仍阻擋 handler/solver。既有每日額度熔斷、有限分鐘重試、新條款/非零總額停止與訂單確認檢查繼續通過；未執行測試套件或實際 CAPTCHA/API 請求。
+- 執行狀態與限制：核對時最新正式 run 仍為 #68，沒有重複重跑。當前子對話未提供可呼叫的正常瀏覽器/CUA 工具，GitHub 連接器沒有 workflow dispatch，Mac 已確認無 gh；不繞過既有權限拒絕、不安裝 CLI、不讀取/新增憑證。合併並通過精確版本 CI 後，需在正式 workflow 選 master、勾選「允許本次手動執行處理 CAPTCHA（需已授權）」並按 Run workflow 一次，再追蹤訂單結果。Gemini 真正每日額度耗盡時仍停止，不提高免費額度或更改付費方案。

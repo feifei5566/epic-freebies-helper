@@ -2,6 +2,12 @@ name: Epic Awesome Gamer (Scheduled)
 
 on:
   workflow_dispatch: # 手动触发
+    inputs:
+      allow_captcha_solving:
+        description: '允許本次手動執行處理 CAPTCHA（需已授權）'
+        required: false
+        default: false
+        type: boolean
   schedule:
     # 每周四 UTC 15:20 运行一次（北京时间周四 23:20）
     # 该时间点放在 Epic 周免刷新之后，避免过早触发。
@@ -83,7 +89,7 @@ jobs:
           SPATIAL_POINT_REASONER_MODEL: ${{ vars.SPATIAL_POINT_REASONER_MODEL || secrets.SPATIAL_POINT_REASONER_MODEL }}
           SPATIAL_PATH_REASONER_MODEL: ${{ vars.SPATIAL_PATH_REASONER_MODEL || secrets.SPATIAL_PATH_REASONER_MODEL }}
           BROWSER_BACKEND: playwright
-          ALLOW_CAPTCHA_SOLVING: false
+          ALLOW_CAPTCHA_SOLVING: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_captcha_solving && 'true' || 'false' }}
           BROWSER_PROXY: ${{ secrets.BROWSER_PROXY }}
           HEADLESS: virtual
           DISABLE_BEZIER_TRAJECTORY: false

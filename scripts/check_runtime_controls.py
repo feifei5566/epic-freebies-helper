@@ -18,6 +18,7 @@ from pathlib import Path
 from loguru import logger
 from tenacity import retry, stop_after_attempt
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'app'))
@@ -147,6 +148,32 @@ async def expect_failure(action, error_type):
 
 async def main():
     passed = []
+    workflow = yaml.safe_load((ROOT / '.github/workflows/epic-gamer.yml').read_text())
+    events = workflow.get('on', workflow.get(True))  # PyYAML uses YAML 1.1 booleans.
+    approval = events['workflow_dispatch']['inputs']['allow_captcha_solving']
+    assert approval['type'] == 'boolean' and approval['default'] is False
+    assert set(events) == {'workflow_dispatch', 'schedule'}
+    env = next(
+        step['env']
+        for step in workflow['jobs']['epic-gamer']['steps']
+        if step.get('name') == 'Run Epic Awesome Gamer'
+    )
+    assert (
+        env['ALLOW_CAPTCHA_SOLVING']
+        == "${{ github.event_name == 'workflow_dispatch' && inputs.allow_captcha_solving && 'true' || 'false' }}"
+    )
+    settings_tree = ast.parse((ROOT / 'app/settings.py').read_text())
+    default = next(
+        n.value
+        for n in ast.walk(settings_tree)
+        if isinstance(n, ast.AnnAssign)
+        and isinstance(n.target, ast.Name)
+        and n.target.id == 'ALLOW_CAPTCHA_SOLVING'
+    )
+    assert next(k.value.value for k in default.keywords if k.arg == 'default') is False
+    passed.append(
+        'CAPTCHA approval is a default-off boolean scoped to explicit workflow_dispatch input'
+    )
     daily = RuntimeError('429 RESOURCE_EXHAUSTED GenerateRequestsPerDayPerProjectPerModel-FreeTier')
     minute = RuntimeError(
         '429 RESOURCE_EXHAUSTED GenerateRequestsPerMinutePerProjectPerModel-FreeTier'
@@ -184,6 +211,8 @@ async def main():
         page=types.SimpleNamespace(frames=[]),
         agent_config=types.SimpleNamespace(ALLOW_CAPTCHA_SOLVING=True),
     )
+    await recursive._task_handler(response)
+    assert recursive.handler_calls == 1
     await expect_failure(recursive._solve_captcha(), EpicLlmQuotaExhaustedError)
     assert recursive.solver_calls == 1
     passed.append('upstream exception recursion stopped after one offline attempt')

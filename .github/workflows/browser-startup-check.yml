@@ -35,6 +35,7 @@ jobs:
               'certifi', 'charset-normalizer', 'greenlet', 'idna', 'loguru',
               'playwright', 'pyee', 'requests', 'typing-extensions', 'urllib3',
               'tenacity', 'pydantic', 'pydantic-core', 'annotated-types', 'typing-inspection',
+              'pyyaml',
           }
           requirements = []
           for package in packages:
