@@ -1721,3 +1721,13 @@
 - 修改檔案：`.github/workflows/epic-gamer.yml`、`.github/workflows/browser-startup-check.yml`（加入鎖版 PyYAML 至隔離檢查依賴）、`scripts/check_runtime_controls.py`、本維護紀錄。相關語法按 GitHub 官方 workflow_dispatch typed inputs 與表達式文件核對。
 - 驗證結果：離線檢查確認布林型別、預設 false、限定手動事件與本次 input、程式預設未改；授權模式會把 response handler 委派至上游，未授權模式仍阻擋 handler/solver。既有每日額度熔斷、有限分鐘重試、新條款/非零總額停止與訂單確認檢查繼續通過；未執行測試套件或實際 CAPTCHA/API 請求。
 - 執行狀態與限制：核對時最新正式 run 仍為 #68，沒有重複重跑。當前子對話未提供可呼叫的正常瀏覽器/CUA 工具，GitHub 連接器沒有 workflow dispatch，Mac 已確認無 gh；不繞過既有權限拒絕、不安裝 CLI、不讀取/新增憑證。合併並通過精確版本 CI 後，需在正式 workflow 選 master、勾選「允許本次手動執行處理 CAPTCHA（需已授權）」並按 Run workflow 一次，再追蹤訂單結果。Gemini 真正每日額度耗盡時仍停止，不提高免費額度或更改付費方案。
+
+
+## 2026-10-04：登入與結帳 CAPTCHA 重試改用不可重設的共用預算
+
+- 正式證據：run `37175310546`（#69，提交 `6e1d8238`）啟動 Playwright 成功且單次 CAPTCHA input 為 true；可核對到 19 次 Visible hCaptcha solve attempt、18 個結果（17 failure、1 success），最後 `EpicLlmQuotaExhaustedError` 停止，沒有登入成功或 Verified Epic orders 記錄。單次授權已使用完，本次修復明確不啟動新登入/CAPTCHA/領取/LLM 請求。
+- 根因判斷：`_wait_for_password_form` 忽略 `_solve_visible_hcaptcha()` 的 False，並每次延長本機 deadline；每批三次重試可被新批次、換頁、登入重試反覆重開。結帳 security/probe/reconciliation/cart 也使用多個局部重試批次並建立新 agent，因此局部上限不足。密碼重送的泛用 exception 捕捉還可能吞掉不可重試停止錯誤。
+- 修改檔案：`app/extensions/runtime_failures.py` 新增 CaptchaBudget 與明確不可重試的預算錯誤；`hcaptcha_runtime.py` 的每次 challenge wait 必須帶入共用預算；`app/services/epic_authorization_service.py`、`epic_games_service.py`；`scripts/check_runtime_controls.py` 與本紀錄。
+- 行為與上限：每個登入流程從建立物件起共用三次 CAPTCHA wait 啟動及 300 秒固定期限。`invoke` 包住整個流程與所有頁面/登入重試，未重設 deadline/counter；False 經嚴格 helper 立即停止，不再重開批次。第一次清除 CAPTCHA 後只允許一次最多 30 秒的密碼表單呈現窗口，受全程 deadline 限制；缺表單則不可重試失敗，不把 CAPTCHA success 當成登入 success。每個結帳收集物件也共用三次 challenge wait 與既有 `TASK_TIMEOUT_SECONDS` 固定期限（預設 900 秒），包含 security/probe、重新建立 agent、cart、reconciliation 與外層 retry；全程超時取消，仍由訂單摘要核對部分/未完成結果。此上限計算 challenge wait，並非聲稱所有模型子請求只有三次；provider 個別請求的有限重試與每日額度熔斷仍保留。
+- 驗證結果：Python AST、修改行格式化、Ruff 靜態檢查、`git diff --check` 通過。離線實際控制函式驗證 False 停止、換頁/登入重試共用三次、三次用完後新批次或新 agent 不再呼叫 challenge、success 但缺密碼表單在窗口內失敗、全程超时與卡住的 challenge 被取消、已過期預算不開始工作；所有 production wait 均帶入 owning budget。既有預設 false 的單次 input、CAPTCHA 阻擋、每日/分鐘 quota 分類、零元/新條款保護及精確訂單證據檢查繼續通過。沒有執行測試套件，沒有 Epic/LLM 請求或實際解題。
+- 尚缺證據與外部限制：當時密碼頁 DOM/可見控制狀態不足以判定 CAPTCHA success 後表單缺失的具體原因；不改寫按鈕/密碼選擇器、不猜測根因。Gemini 額度不能由程式提高，仍需等供應商重置；後續真實 CAPTCHA/登入/免費領取須另有新的單次授權，不能重跑使用舊 SHA 的 #69 來驗證本修補。

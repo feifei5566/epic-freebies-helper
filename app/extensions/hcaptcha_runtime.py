@@ -7,6 +7,7 @@ from hcaptcha_challenger.models import ChallengeSignal
 from loguru import logger
 
 from extensions.runtime_failures import (
+    CaptchaBudget,
     EpicCaptchaRequiredError,
     llm_failure_kind,
     llm_retry_delay,
@@ -64,16 +65,26 @@ class EpicCaptchaAgent(AgentV):
 
 
 async def wait_for_challenge_signal(
-    agent: AgentV, *, context: str, timeout_seconds: float
+    agent: AgentV, *, context: str, timeout_seconds: float, budget: CaptchaBudget
 ) -> ChallengeSignal:
+    timeout_seconds = budget.begin_attempt(timeout_seconds)
+    logger.info(
+        'CAPTCHA shared budget | scope={} | context={} | attempt={}/{}',
+        budget.scope,
+        context,
+        budget.attempts,
+        budget.max_attempts,
+    )
     try:
         signal = await asyncio.wait_for(agent.wait_for_challenge(), timeout=timeout_seconds)
     except Exception as err:
         raise_if_non_retryable(err)
+        budget.remaining()
         if llm_failure_kind(err) == 'rate_limit':
-            delay = llm_retry_delay(err)
+            delay = min(llm_retry_delay(err), budget.remaining())
             logger.warning('LLM temporary rate limit | context={} | backoff={}s', context, delay)
             await asyncio.sleep(delay)
+            budget.remaining()
         logger.warning(
             "hCaptcha challenge wait failed | context={} | timeout={}s | error_type={}",
             context,
@@ -82,5 +93,6 @@ async def wait_for_challenge_signal(
         )
         raise
 
+    budget.remaining()
     logger.info("hCaptcha challenge result | context={} | signal={}", context, signal.value)
     return signal

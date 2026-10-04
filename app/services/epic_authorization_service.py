@@ -21,6 +21,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from extensions.hcaptcha_runtime import EpicCaptchaAgent as AgentV, wait_for_challenge_signal
 from extensions.runtime_failures import (
+    CaptchaBudget,
     EpicNonRetryableError,
     EpicLlmQuotaExhaustedError,
     raise_if_non_retryable,
@@ -63,6 +64,7 @@ class EpicAuthorization:
 
     def __init__(self, page: Page):
         self.page = page
+        self._captcha_budget = CaptchaBudget(scope='authentication', timeout_seconds=300)
 
         self._is_login_success_signal = asyncio.Queue()
         self._login_error_signal = asyncio.Queue()
@@ -379,7 +381,7 @@ class EpicAuthorization:
 
         for attempt in range(1, max_attempts + 1):
             logger.warning(
-                "Visible hCaptcha during login ({}); solving attempt {}/{}",
+                "Visible hCaptcha during login ({}) | local_cycle={}/{}; shared budget controls attempts",
                 reason,
                 attempt,
                 max_attempts,
@@ -389,6 +391,7 @@ class EpicAuthorization:
                     agent,
                     context=reason,
                     timeout_seconds=settings.EXECUTION_TIMEOUT + settings.RESPONSE_TIMEOUT + 5,
+                    budget=self._captcha_budget,
                 )
             except Exception as err:
                 raise_if_non_retryable(err)
@@ -411,6 +414,12 @@ class EpicAuthorization:
                 "hCaptcha still visible after {} solve attempts ({})", max_attempts, reason
             )
         return not still_visible
+
+    async def _require_visible_hcaptcha_cleared(self, agent: AgentV, **kwargs) -> None:
+        if not await self._solve_visible_hcaptcha(agent, **kwargs):
+            raise EpicAuthenticationFatalError(
+                'Epic CAPTCHA did not clear within bounded attempts; stopping authentication.'
+            )
 
     async def _first_visible_locator(
         self, selectors: tuple[str, ...], *, reject_social: bool = False
@@ -442,17 +451,27 @@ class EpicAuthorization:
 
     async def _wait_for_password_form(self, agent: AgentV, timeout_ms: int = 30000) -> Locator:
         """Wait for the password field, solving any captcha that appears after Continue."""
-        deadline = time.monotonic() + timeout_ms / 1000
+        deadline = min(self._captcha_budget.deadline, time.monotonic() + timeout_ms / 1000)
+        captcha_cleared = False
 
         while time.monotonic() < deadline:
+            self._captcha_budget.remaining()
             if await self._password_step_visible():
                 password_input = await self._first_visible_locator(PASSWORD_INPUT_SELECTORS)
                 if password_input is not None:
                     return password_input
 
             if await self._has_visible_hcaptcha():
-                await self._solve_visible_hcaptcha(agent, reason="waiting for password form")
-                deadline = max(deadline, time.monotonic() + timeout_ms / 1000)
+                await self._require_visible_hcaptcha_cleared(
+                    agent, reason="waiting for password form"
+                )
+                if not captcha_cleared:
+                    # Allow one form-settle window after the first cleared challenge.
+                    # Further challenges/restarts cannot extend the owning deadline.
+                    deadline = min(
+                        self._captcha_budget.deadline, time.monotonic() + timeout_ms / 1000
+                    )
+                    captcha_cleared = True
                 continue
 
             if await self._has_blocking_talon_overlay():
@@ -461,6 +480,11 @@ class EpicAuthorization:
 
             await self.page.wait_for_timeout(400)
 
+        if captcha_cleared:
+            raise EpicAuthenticationFatalError(
+                'CAPTCHA cleared, but the Epic password form could not be located within the bounded wait. '
+                'Authentication was not confirmed; page-state evidence is required to diagnose why.'
+            )
         raise PlaywrightTimeoutError("Timed out waiting for Epic password form")
 
     async def _click_login_control(
@@ -483,7 +507,7 @@ class EpicAuthorization:
 
         while time.monotonic() < deadline:
             if await self._has_visible_hcaptcha():
-                await self._solve_visible_hcaptcha(agent, reason=f"before {step_name}")
+                await self._require_visible_hcaptcha_cleared(agent, reason=f"before {step_name}")
                 # After a challenge clears, re-check whether login already succeeded.
                 if is_sign_in_step and "/id/login" not in self.page.url:
                     return
@@ -507,7 +531,7 @@ class EpicAuthorization:
 
                 # Click may itself open a challenge before the form advances.
                 if await self._has_visible_hcaptcha():
-                    await self._solve_visible_hcaptcha(agent, reason=f"after {step_name}")
+                    await self._require_visible_hcaptcha_cleared(agent, reason=f"after {step_name}")
                 return
             except Exception as err:
                 raise_if_non_retryable(err)
@@ -519,19 +543,19 @@ class EpicAuthorization:
                     click_advanced = click_advanced or await self._password_step_visible()
                 if click_advanced:
                     if await self._has_visible_hcaptcha():
-                        await self._solve_visible_hcaptcha(
+                        await self._require_visible_hcaptcha_cleared(
                             agent, reason=f"after {step_name} click timeout"
                         )
                     return
                 if self._is_pointer_intercept_error(err):
-                    await self._solve_visible_hcaptcha(
+                    await self._require_visible_hcaptcha_cleared(
                         agent, reason=f"during {step_name} click failure"
                     )
                     continue
                 await self.page.wait_for_timeout(400)
 
         if await self._has_visible_hcaptcha():
-            await self._solve_visible_hcaptcha(
+            await self._require_visible_hcaptcha_cleared(
                 agent, reason=f"final attempt before {step_name}", max_attempts=2
             )
         locator = await self._first_visible_locator(selectors, reject_social=is_sign_in_step)
@@ -609,9 +633,9 @@ class EpicAuthorization:
         self, point_url: str, agent: AgentV, timeout_seconds: int = 300
     ) -> None:
         started_at = time.monotonic()
-        deadline = started_at + timeout_seconds
+        deadline = min(started_at + timeout_seconds, self._captcha_budget.deadline)
         hard_timeout_seconds = max(timeout_seconds, 180)
-        max_deadline = started_at + hard_timeout_seconds
+        max_deadline = min(started_at + hard_timeout_seconds, self._captcha_budget.deadline)
         max_totp_attempts = 6
         max_invalid_totp_rejections = 3
         captcha_totp_refresh_cooldown = 8.0
@@ -772,6 +796,7 @@ class EpicAuthorization:
                             settings.EXECUTION_TIMEOUT + settings.RESPONSE_TIMEOUT + 5,
                             max(1.0, deadline - time.monotonic()),
                         ),
+                        budget=self._captcha_budget,
                     )
                     challenge_solved = challenge_signal is ChallengeSignal.SUCCESS
                     if challenge_solved:
@@ -835,7 +860,9 @@ class EpicAuthorization:
     async def _resubmit_password_form(self, agent: AgentV | None = None) -> bool:
         try:
             if agent is not None and await self._has_visible_hcaptcha():
-                await self._solve_visible_hcaptcha(agent, reason="before password resubmit")
+                await self._require_visible_hcaptcha_cleared(
+                    agent, reason="before password resubmit"
+                )
 
             deadline = time.monotonic() + 3
             password_input = None
@@ -870,6 +897,7 @@ class EpicAuthorization:
         except PlaywrightTimeoutError:
             return False
         except Exception as err:
+            raise_if_non_retryable(err)
             logger.warning("Could not resubmit Epic password form after captcha reset: {!r}", err)
             return False
 
@@ -1035,7 +1063,7 @@ class EpicAuthorization:
                     break
                 except PlaywrightTimeoutError:
                     if await self._has_visible_hcaptcha():
-                        await self._solve_visible_hcaptcha(agent, reason="login outcome")
+                        await self._require_visible_hcaptcha_cleared(agent, reason="login outcome")
                     elif outcome_attempt < 3 and await self._resubmit_password_form(agent):
                         continue
                     else:
@@ -1098,6 +1126,19 @@ class EpicAuthorization:
             return None
 
     async def invoke(self) -> bool:
+        self._captcha_budget.remaining()
+        timeout = asyncio.timeout_at(self._captcha_budget.deadline)
+        try:
+            async with timeout:
+                return await self._invoke_with_budget()
+        except TimeoutError as error:
+            if timeout.expired():
+                raise EpicAuthenticationFatalError(
+                    'Epic authentication exceeded its shared 300-second time budget across all retries.'
+                ) from error
+            raise
+
+    async def _invoke_with_budget(self) -> bool:
         self.page.on("response", self._on_response_anything)
         self._totp_attempts = 0
         self._invalid_totp_rejections = 0

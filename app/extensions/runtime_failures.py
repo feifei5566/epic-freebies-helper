@@ -1,6 +1,7 @@
 """Classify terminal runtime failures without importing settings or exposing responses."""
 
 import re
+import time
 
 
 class EpicNonRetryableError(RuntimeError):
@@ -9,6 +10,39 @@ class EpicNonRetryableError(RuntimeError):
 
 class EpicCaptchaRequiredError(EpicNonRetryableError):
     pass
+
+
+class EpicCaptchaBudgetExhaustedError(EpicNonRetryableError):
+    pass
+
+
+class CaptchaBudget:
+    """One counter and deadline shared by every retry in an owning flow."""
+
+    def __init__(self, *, scope, max_attempts=3, timeout_seconds=300, clock=time.monotonic):
+        self.scope = scope
+        self.max_attempts = max_attempts
+        self.attempts = 0
+        self.clock = clock
+        self.deadline = clock() + timeout_seconds
+
+    def remaining(self):
+        seconds = self.deadline - self.clock()
+        if seconds <= 0:
+            raise EpicCaptchaBudgetExhaustedError(
+                f'{self.scope} time budget exhausted; stopping without confirming success.'
+            )
+        return seconds
+
+    def begin_attempt(self, timeout_seconds):
+        remaining = self.remaining()
+        if self.attempts >= self.max_attempts:
+            raise EpicCaptchaBudgetExhaustedError(
+                f'{self.scope} CAPTCHA budget exhausted: '
+                f'{self.attempts}/{self.max_attempts} attempts used across all retries.'
+            )
+        self.attempts += 1
+        return min(timeout_seconds, remaining)
 
 
 class EpicLlmQuotaExhaustedError(EpicNonRetryableError):

@@ -23,7 +23,11 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt
 
 from extensions.hcaptcha_runtime import EpicCaptchaAgent as AgentV, wait_for_challenge_signal
-from extensions.runtime_failures import raise_if_non_retryable
+from extensions.runtime_failures import (
+    CaptchaBudget,
+    EpicCaptchaBudgetExhaustedError,
+    raise_if_non_retryable,
+)
 from models import OrderItem, Order
 from models import PromotionGame
 from services.epic_authorization_service import EpicManualActionRequiredError
@@ -402,6 +406,9 @@ class EpicAgent:
 class EpicGames:
     def __init__(self, page: Page):
         self.page = page
+        self._captcha_budget = CaptchaBudget(
+            scope='checkout', timeout_seconds=settings.TASK_TIMEOUT_SECONDS
+        )
         self._promotions: List[PromotionGame] = []
 
     @staticmethod
@@ -1464,7 +1471,11 @@ class EpicGames:
 
             elapsed_seconds = int(time.monotonic() - started_at)
             logger.info(
-                f"Solving checkout security check (attempt {attempt}, elapsed {elapsed_seconds}s)"
+                'Checkout security check | phase_attempt={} | shared_attempts_used={}/{} | elapsed={}s',
+                attempt,
+                self._captcha_budget.attempts,
+                self._captcha_budget.max_attempts,
+                elapsed_seconds,
             )
 
             if attempt <= 3 or attempt % 2 == 0:
@@ -1484,6 +1495,7 @@ class EpicGames:
                         settings.EXECUTION_TIMEOUT + settings.RESPONSE_TIMEOUT + 5,
                         remaining_seconds,
                     ),
+                    budget=self._captcha_budget,
                 )
                 if challenge_signal is not ChallengeSignal.SUCCESS:
                     logger.warning(
@@ -1572,7 +1584,9 @@ class EpicGames:
             if getattr(
                 agent, '_epic_captcha_required', False
             ) or await self._is_checkout_security_check_visible(page):
-                await wait_for_challenge_signal(agent, context='checkout_manual', timeout_seconds=5)
+                await wait_for_challenge_signal(
+                    agent, context='checkout_manual', timeout_seconds=5, budget=self._captcha_budget
+                )
             return False
         if await self._is_checkout_security_check_visible(page):
             logger.debug(f"Checkout challenge probe found visible challenge before waiting. {url=}")
@@ -1580,7 +1594,7 @@ class EpicGames:
 
         try:
             challenge_signal = await wait_for_challenge_signal(
-                agent, context="checkout_probe", timeout_seconds=25
+                agent, context="checkout_probe", timeout_seconds=25, budget=self._captcha_budget
             )
         except Exception as err:
             raise_if_non_retryable(err)
@@ -1611,7 +1625,10 @@ class EpicGames:
 
         try:
             challenge_signal = await wait_for_challenge_signal(
-                agent, context="checkout_extended_probe", timeout_seconds=timeout_seconds
+                agent,
+                context="checkout_extended_probe",
+                timeout_seconds=timeout_seconds,
+                budget=self._captcha_budget,
             )
         except Exception as err:
             raise_if_non_retryable(err)
@@ -2247,6 +2264,19 @@ class EpicGames:
 
     @retry(retry=retry_if_exception_type(TimeoutError), stop=stop_after_attempt(2), reraise=True)
     async def collect_weekly_games(self, promotions: List[PromotionGame]):
+        self._captcha_budget.remaining()
+        timeout = asyncio.timeout_at(self._captcha_budget.deadline)
+        try:
+            async with timeout:
+                await self._collect_weekly_games(promotions)
+        except asyncio.TimeoutError as error:
+            if timeout.expired():
+                raise EpicCaptchaBudgetExhaustedError(
+                    'Checkout exceeded its shared time budget; collection is incomplete and requires order verification.'
+                ) from error
+            raise
+
+    async def _collect_weekly_games(self, promotions: List[PromotionGame]):
         has_cart_items, instant_claimed, failed_urls = await self.add_promotion_to_cart(
             self.page, promotions
         )
