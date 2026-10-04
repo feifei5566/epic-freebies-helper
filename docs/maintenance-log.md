@@ -1659,3 +1659,37 @@
   - 移除重复修改已安装 Playwright 文件的不完整补丁，保留上游重试前检查结账进度、截图超时和异常保护。
   - Python AST 语法检查、Node `--check` 和 `git diff --check` 通过；按仓库规则未执行测试、真实领取或重跑 Actions，云端领取结果尚待验证。
   - 对 5 个合并相关 Python 文件运行 Ruff，报告 54 项问题；逐项按规则、消息和源码行对照两个合并父版本，均可追溯到既有代码。Black 检查 4 个文件通过，`epic_games_service.py` 的既有格式差异仍存在，本次未扩大范围重排无关代码。
+
+### 2026-10-04 排程工作流程明確指定 Playwright Firefox
+
+- 現象：
+  - 既有診斷指出，10 月 1 日 Actions run `36921086912` 在瀏覽器啟動前出現 `UnknownProperty: navigator.appCodeName`，`auto` 未降級至 Playwright。
+- 根因判斷：
+  - 既有診斷指向鎖定的 Camoufox Python `0.4.11` 與動態下載的 `beta.33` binary 不相容；本次未重新執行 Camoufox。
+  - 原始碼確認 `auto` 的啟動錯誤判斷未涵蓋該 UnknownProperty；明確指定 `playwright` 可略過 Camoufox 初始化。
+- 改動檔案：
+  - `.github/workflows/epic-gamer.yml`
+  - `docs/maintenance-log.md`（依 AGENTS.md 追加本條紀錄）
+- 處理結果：
+  - 工作流程僅將 `BROWSER_BACKEND: auto` 改為 `BROWSER_BACKEND: playwright`，沿用既有 Firefox 安裝步驟與其他設定。
+  - 本次 Mac 獨立 checkout 起始狀態乾淨，HEAD 與核對時遠端 master 同為 `ade587cd9d856c3ef74b8bacfaa94dd463734cfb`；YAML 解析、單行差異檢查及 `git diff --check` 通過。
+  - 使用現成 Python 3.12 與工作目錄內隔離安裝的鎖定版本 Playwright `1.53.0`、Firefox `139.0`（build `1488`），針對實際 `open_browser_context()` 執行啟動驗證；未載入應用程式帳號設定。
+  - 本機啟動驗證受阻：預設沙箱中 Firefox 以 `SIGABRT` 中止；放寬執行權限後仍在 90 秒上限逾時。最後一次保留必要 Mac 系統環境的隔離重試，日誌顯示 `sandbox_extension_issue_file_to_process ... Operation not permitted`、找不到 profile 與 framebuffer 錯誤，未完成頁面載入或正常關閉驗證。
+  - 逾時後 Playwright 已終止該次 Firefox 程序並清理暫存目錄；驗證用 profile 均已移除。不能將本次靜態檢查視為瀏覽器啟動成功，也未驗證 Actions 的 Linux/Xvfb 環境。
+  - 依倉庫規則未執行測試套件；未執行 `deploy.py`、登入 Epic、解驗證碼、領取遊戲、推送、開 PR、部署或觸發工作流程。
+  - 此修改只處理 Camoufox 初始化阻塞；先前 Gemini 免費額度 `429` 問題仍是獨立限制，本次未呼叫模型 API 或確認目前額度。
+
+### 2026-10-04 增加修正分支限定的 Linux 瀏覽器啟動檢查
+
+- 現象與根因判斷：
+  - Mac 隔離啟動因本機 Firefox 執行環境限制而未完成，且未找到可用的既有 Linux 容器；需在接近排程工作流程的 Ubuntu/Xvfb 環境驗證實際啟動路徑。
+- 改動檔案：
+  - `.github/workflows/browser-startup-check.yml`
+  - `scripts/check_browser_startup.py`
+  - `docs/maintenance-log.md`（追加本條紀錄）
+- 處理結果：
+  - 新工作流程只接受 `codex/playwright-linux-startup` 分支的 push，另以 repository/ref/event 條件限制 job；使用 `contents: read`，checkout 不保留認證，不引用 secrets。
+  - 已核對既有領取工作流程只由排程或手動觸發、Docker 發佈只由 release 觸發；此分支 push 不會啟動這兩個流程，master 不因本次分支推送而更動。
+  - 僅按 `uv.lock` 安裝啟動所需的套件並核對 wheel 雜湊，使用鎖定的 Playwright `1.53.0`，不安裝或升級完整應用程式相依套件。
+  - 啟動腳本在 Linux/Xvfb 中以 `HEADLESS=virtual` 呼叫實際 `open_browser_context()`，使用暫存 profile 與獨立瀏覽器設定；不載入帳號／模型設定，禁止載入 Camoufox 與 hCaptcha，僅操作空白頁及本機 HTML，確認關閉與 profile 清理。
+  - 本機靜態檢查涵蓋 Python 語法、工作流程 YAML、觸發條件、權限與差異；Linux 啟動結果由該提交的獨立 Actions run 回報。此檢查不執行測試套件，也不執行部署入口、登入、解驗證碼、領取或模型 API。

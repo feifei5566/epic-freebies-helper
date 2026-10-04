@@ -1,0 +1,64 @@
+name: Isolated Linux Browser Startup
+
+on:
+  push:
+    branches:
+      - codex/playwright-linux-startup
+
+permissions:
+  contents: read
+
+jobs:
+  browser-startup:
+    if: github.repository == 'feifei5566/epic-freebies-helper' && github.ref == 'refs/heads/codex/playwright-linux-startup' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository without persisted credentials
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install only the locked browser dependencies
+        run: |
+          python - <<'PY'
+          import pathlib
+          import tomllib
+
+          packages = tomllib.loads(pathlib.Path('uv.lock').read_text())['package']
+          names = {
+              'certifi', 'charset-normalizer', 'greenlet', 'idna', 'loguru',
+              'playwright', 'pyee', 'requests', 'typing-extensions', 'urllib3',
+          }
+          requirements = []
+          for package in packages:
+              if package['name'] in names:
+                  hashes = ' '.join('--hash=' + wheel['hash'] for wheel in package['wheels'])
+                  requirements.append(f"{package['name']}=={package['version']} {hashes}")
+                  names.remove(package['name'])
+          if names:
+              raise RuntimeError(f'Missing locked dependencies: {sorted(names)}')
+          pathlib.Path('/tmp/browser-startup-requirements.txt').write_text(
+              '\n'.join(requirements) + '\n'
+          )
+          PY
+          python -m pip install --only-binary=:all: --require-hashes -r /tmp/browser-startup-requirements.txt
+
+      - name: Install Playwright Firefox and Linux display dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          python -m playwright install --with-deps firefox
+
+      - name: Launch and close Firefox on a local page under Xvfb
+        env:
+          BROWSER_BACKEND: playwright
+          HEADLESS: virtual
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          timeout 120s xvfb-run --auto-servernum --server-args='-screen 0, 1920x1080x24' python -B scripts/check_browser_startup.py
