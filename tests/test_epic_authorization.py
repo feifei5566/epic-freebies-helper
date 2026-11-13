@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -102,3 +102,95 @@ def test_login_refreshes_cannot_reset_shared_captcha_budget(monkeypatch):
     assert auth._captcha_budget is original_budget
     assert original_budget.attempts == 3
     assert auth._replace_page.await_count == 3
+
+
+@pytest.mark.parametrize(
+    "url,method,endpoint",
+    [
+        ("https://www.epicgames.com/id/api/login/options", "GET", "/id/api/login/options"),
+        ("https://talon-service-prod.ecosec.on.epicgames.com/v1/init", "POST", "talon"),
+    ],
+)
+@pytest.mark.parametrize("status", [200, 403])
+def test_prelogin_rejections_are_observed_without_becoming_login_signals(
+    monkeypatch, url, method, endpoint, status
+):
+    log = Mock()
+    monkeypatch.setattr(authorization, "logger", log)
+    code = "errors.com.epicgames.accountportal.captcha_invalid"
+    response = SimpleNamespace(
+        url=url,
+        status=status,
+        request=SimpleNamespace(method=method),
+        json=AsyncMock(return_value={"errorCode": code, "token": "private-token"}),
+    )
+    auth = EpicAuthorization(SimpleNamespace())
+
+    asyncio.run(auth._on_response_anything(response))
+
+    log.warning.assert_called_once_with(
+        "Epic authentication response rejected | endpoint={} | status={} | error_code={}",
+        endpoint,
+        status,
+        code,
+    )
+    assert auth._is_login_success_signal.empty()
+    assert auth._login_error_signal.empty()
+
+
+@pytest.mark.parametrize("body", [{"errorCode": "private-token"}, ["private-token"], None])
+def test_auth_diagnostics_redact_unknown_paths_and_response_content(monkeypatch, body):
+    log = Mock()
+    monkeypatch.setattr(authorization, "logger", log)
+    response = SimpleNamespace(
+        url="https://www.epicgames.com/id/api/private-token?email=private@example.test",
+        status=403,
+        json=AsyncMock(return_value=body),
+    )
+    asyncio.run(EpicAuthorization(SimpleNamespace())._log_auth_rejection(response))
+
+    assert log.warning.call_args.args[1:3] == ("/id/api/[other]", 403)
+    assert "private" not in str(log.mock_calls)
+
+
+def test_non_json_auth_error_still_reports_status(monkeypatch):
+    log = Mock()
+    monkeypatch.setattr(authorization, "logger", log)
+    response = SimpleNamespace(
+        url="https://www.epicgames.com/id/api/reputation",
+        status=429,
+        json=AsyncMock(side_effect=ValueError("private response body")),
+    )
+    asyncio.run(EpicAuthorization(SimpleNamespace())._log_auth_rejection(response))
+    assert log.warning.call_args.args[1:] == ("/id/api/reputation", 429, "unavailable")
+
+
+@pytest.mark.parametrize(
+    "url,status",
+    [
+        ("https://www.epicgames.com/id/api/login", 200),
+        ("https://www.epicgames.com.evil.test/id/api/login", 403),
+        ("https://api.hcaptcha.com/checkcaptcha/token", 403),
+        ("https://www.epicgames.com/account/personal", 403),
+    ],
+)
+def test_success_and_unrelated_responses_do_not_log_auth_failures(monkeypatch, url, status):
+    log = Mock()
+    monkeypatch.setattr(authorization, "logger", log)
+    response = SimpleNamespace(url=url, status=status, json=AsyncMock(return_value={}))
+    asyncio.run(EpicAuthorization(SimpleNamespace())._log_auth_rejection(response))
+    log.warning.assert_not_called()
+
+
+def test_real_login_error_is_still_queued(monkeypatch):
+    monkeypatch.setattr(authorization, "logger", Mock())
+    payload = {"errorCode": "errors.com.epicgames.account.invalid_account_credentials"}
+    response = SimpleNamespace(
+        url="https://www.epicgames.com/id/api/login",
+        status=400,
+        request=SimpleNamespace(method="POST"),
+        json=AsyncMock(return_value=payload),
+    )
+    auth = EpicAuthorization(SimpleNamespace())
+    asyncio.run(auth._on_response_anything(response))
+    assert auth._login_error_signal.get_nowait() == payload
