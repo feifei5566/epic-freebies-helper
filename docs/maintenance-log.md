@@ -1858,3 +1858,11 @@
 - 證據與根因：修復分支 `6d8feab6` 的 Linux CI `43346483838` 通過；正式 #76（`43346584088`）確認 `captcha_solving=True` 且一次 hCaptcha challenge success。其登入截圖顯示 Epic 的 `Incorrect response. Please refresh the page.`，仍在 email/Continue 頁面；程式卻等待密碼欄位 30 秒後拋出模糊的 `EpicAuthenticationFatalError`。這證明 hCaptcha success 不是 Epic 接受登入的證據；Epic 拒絕的服務端原因無法僅由畫面判定。
 - 修改檔案與行為：`app/services/epic_authorization_service.py` 精確辨識這個可刷新的錯誤，拋出可重試的 `EpicLoginChallengeRejectedError`，交回既有登入重試迴圈清除舊頁面狀態；共用三次 CAPTCHA 和 300 秒 deadline 不重設。更新 workflow 摘要、中英文 README 及 runtime-control 的假頁面，新增 `tests/test_epic_authorization.py` 六項回歸案例；既有 Linux workflow 增加使用鎖定依賴及假憑證的 unit-tests job。
 - 驗證結果：本機全套 `103 passed, 2 skipped`，15 項離線 controls 通過。新案例涵蓋立即偵測、hCaptcha 成功後 Epic 拒絕、正常密碼頁、回到重試迴圈及刷新仍受共用預算限制。此修正不保證 Epic 下次會接受登入；推送後另追蹤新版本 CI 及正式試跑。
+
+### 2026-11-13：修復版 Linux CI 與正式 #77 驗證結果
+
+- Linux CI `43347261573`（提交 `616ec8ce`）的 unit-tests job 確認 `103 passed, 2 skipped`；browser-startup job 的 Firefox、本地購物車 DOM 與 15 項離線 runtime controls 均通過。
+- 正式 #77（`43347361313`，相同提交）依序啟動三次 CAPTCHA，結果為 failure、failure、success。第三次 challenge success 後 Epic 仍拒絕登入結果；新版即時辨識 `EpicLoginChallengeRejectedError`，回到既有刷新迴圈。新頁面再次遇到 CAPTCHA 時，共用預算正確拋出 `EpicCaptchaBudgetExhaustedError: 3/3`，沒有發出第四次解題請求，沒有成功登入或核對到領取訂單。
+- 結果：修復排程固定關閉、登入拒絕被誤報成密碼欄位缺失及過時測試碼；實際領取仍受 Epic 拒絕驗證結果阻擋，不能宣稱端到端成功。沒有調高重試上限、更換 API key、改模型或購買服務；不重跑同一版本消耗額度。
+- 摘要補強：`epic-gamer.yml` 同時識別「三次 challenge 均未清除」與「共享 300 秒登入逾時」兩個實際 terminal error 訊息，兩種 shell 摘要案例均通過。這項變更僅影響錯誤呈現。
+- 外部排查依據：Epic 官方的 [Incorrect response 說明](https://www.epicgames.com/help/c-45487929/c-Trending_0/erreur-reponse-incorrecte-veuillez-rafraichir-la-page-a11863449) 將非主機帳號連結情境的這個錯誤連結至登入 CAPTCHA 失敗。可先用一般瀏覽器／其他網路驗證帳號能否登入；目前證據不足以把根因指定為密碼錯誤、IP 限制或特定模型問題。

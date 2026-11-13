@@ -166,7 +166,7 @@ jobs:
               echo "Epic rejected at least one login verification. Review the authorization screenshot and logs for the final failure. A successful hCaptcha response does not confirm login or a claim."
             } >> "$GITHUB_STEP_SUMMARY"
           elif grep -Rqs -E \
-            'EpicCaptchaBudgetExhaustedError|CAPTCHA budget exhausted' \
+            'EpicCaptchaBudgetExhaustedError|CAPTCHA budget exhausted|Epic CAPTCHA did not clear within bounded attempts|Epic authentication exceeded its shared 300-second time budget' \
             app/volumes/logs/ app/volumes/runtime/ 2>/dev/null; then
             {
               echo "## Claim not completed: CAPTCHA retry budget exhausted"
