@@ -179,7 +179,11 @@ async def verify_shared_retry_budgets(passed):
     )
     extract(
         'app/services/epic_authorization_service.py',
-        {'EpicAuthenticationFatalError', 'EpicManualActionRequiredError'},
+        {
+            'EpicAuthenticationFatalError',
+            'EpicManualActionRequiredError',
+            'EpicLoginChallengeRejectedError',
+        },
         namespace,
     )
     methods = {
@@ -233,8 +237,12 @@ async def verify_shared_retry_budgets(passed):
     async def noop(*args, **kwargs):
         return None
 
+    async def empty_body():
+        return ''
+
     def auth_subject():
         subject = Auth(OfflinePage())
+        subject._page_body_text = empty_body
         subject._has_visible_hcaptcha = yes
         subject._password_step_visible = no
         subject._has_blocking_talon_overlay = no
@@ -422,7 +430,8 @@ async def main():
     )
     assert (
         env['ALLOW_CAPTCHA_SOLVING']
-        == "${{ github.event_name == 'workflow_dispatch' && inputs.allow_captcha_solving && 'true' || 'false' }}"
+        == "${{ ((github.event_name == 'schedule' && (vars.ALLOW_SCHEDULED_CAPTCHA_SOLVING || 'true') == 'true') || "
+        "(github.event_name == 'workflow_dispatch' && inputs.allow_captcha_solving)) && 'true' || 'false' }}"
     )
     settings_tree = ast.parse((ROOT / 'app/settings.py').read_text())
     default = next(
@@ -434,7 +443,7 @@ async def main():
     )
     assert next(k.value.value for k in default.keywords if k.arg == 'default') is False
     passed.append(
-        'CAPTCHA approval is a default-off boolean scoped to explicit workflow_dispatch input'
+        'Scheduled CAPTCHA solving defaults on with a repository opt-out; manual runs use their own boolean input'
     )
     daily = RuntimeError('429 RESOURCE_EXHAUSTED GenerateRequestsPerDayPerProjectPerModel-FreeTier')
     minute = RuntimeError(

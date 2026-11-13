@@ -60,6 +60,10 @@ class EpicManualActionRequiredError(EpicNonRetryableError):
     pass
 
 
+class EpicLoginChallengeRejectedError(RuntimeError):
+    """Epic requested a fresh login page after rejecting a challenge response."""
+
+
 class EpicAuthorization:
 
     def __init__(self, page: Page):
@@ -456,6 +460,16 @@ class EpicAuthorization:
 
         while time.monotonic() < deadline:
             self._captcha_budget.remaining()
+            body = " ".join((await self._page_body_text()).lower().split())
+            if "incorrect response. please refresh the page." in body:
+                logger.warning(
+                    "Epic rejected the login challenge response; restarting login within the "
+                    "existing attempt and time limits"
+                )
+                raise EpicLoginChallengeRejectedError(
+                    "Epic rejected the login challenge response: Incorrect response. "
+                    "Please refresh the page."
+                )
             if await self._password_step_visible():
                 password_input = await self._first_visible_locator(PASSWORD_INPUT_SELECTORS)
                 if password_input is not None:

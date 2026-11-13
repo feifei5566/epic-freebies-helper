@@ -4,13 +4,35 @@ on:
   push:
     branches:
       - codex/playwright-linux-startup
+      - codex/fix-scheduled-captcha
+      - master
 
 permissions:
   contents: read
 
 jobs:
+  unit-tests:
+    if: github.repository == 'feifei5566/epic-freebies-helper' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+
+      - name: Install locked test dependencies
+        run: uv sync --frozen --group dev --python 3.12
+
+      - name: Run unit tests with fake credentials
+        env:
+          GEMINI_API_KEY: offline-test-key
+          LLM_PROVIDER: gemini
+        run: uv run --frozen pytest -q
+
   browser-startup:
-    if: github.repository == 'feifei5566/epic-freebies-helper' && github.ref == 'refs/heads/codex/playwright-linux-startup' && github.event_name == 'push'
+    if: github.repository == 'feifei5566/epic-freebies-helper' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
