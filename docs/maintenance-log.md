@@ -1874,3 +1874,10 @@
 - 根因判斷：舊登入 observer 在 GET 或 URL 包含 talon 時直接返回，且只記錄 `/id/api/login` 的錯誤；登入前驗證遭拒的 HTTP 狀態與錯誤碼可能完全缺失。既有 hCaptcha `pass` 僅是前端解題結果，依 [hCaptcha 官方驗證說明](https://docs.hcaptcha.com/#verify-the-user-response-server-side)，網站仍需自行驗證 token；目前不能指定是 IP、瀏覽器、token 效期或其他判定。
 - 修改檔案：`app/services/epic_authorization_service.py` 增加 HTTPS Epic 登入／talon 回應的拒絕診斷，限定輸出端點類別、HTTP status 與合法 Epic errorCode，不輸出 query、headers、body、token 或未知路徑。保留原本登入訊號與重試上限。`tests/test_epic_authorization.py` 增加 GET／talon、HTTP 200 錯誤、非 JSON、遮蔽內容、第三方忽略及原登入錯誤訊號案例；`browser-startup-check.yml` 加入本修復分支。
 - 驗證：本機 `116 passed, 2 skipped`，15 項 runtime controls、Ruff 與 `git diff --check` 通過。後續用此版本受限試跑取得實際錯誤證據；本補丁是診斷改善，尚未宣稱排除 Epic 的服務端拒絕。
+
+### 2026-11-13：#78 確認 Epic captcha_invalid 與本週商品地區差異
+
+- 真實結果：診斷提交 `008e64e9` 的 Linux CI `43353809136` 兩個 job 成功，unit-tests 為 `116 passed, 2 skipped`。正式 #78（run `43353892980`／job `131651190636`）三次 CAPTCHA 依序為 failure、success、success；後兩次成功後約 0.5 秒，Epic 登入前 API 都回 HTTP 400、`errors.com.epicgames.accountportal.captcha_invalid`。刷新後仍相同，最後在共享三次上限停止；沒有第四次解題、成功登入或新訂單。
+- 根因判斷：已從模糊頁面提示進一步確認 Epic API 不接受 CAPTCHA 驗證結果。回覆發生在密碼頁之前；此錯誤碼未揭露 IP、瀏覽器、token 或風控細節，無法由目前證據判定更細的服務端原因。模型另有暫時 ServerError，但後續解題 success 仍遭 Epic 拒絕，不能把全部失敗歸因於模型解題。
+- 商品對照：對公開 `freeGamesPromotions` API 使用 `country`／`allowCountries` 參數唯讀比對，US 回傳 Knightica 的當期零元優惠（11/12 16:00 UTC 至 11/19 16:00 UTC），TW 回傳清單沒有 Knightica；這與同帳號一般 Chrome 的平台／地區不可用提示一致。沒有修改帳號地區、傳送瀏覽器 cookies 到 Actions 或領取其他遊戲。
+- 修改與驗證：`epic-gamer.yml` 摘要也以這個 API errorCode 判定登入驗證拒絕；有實際紀錄時顯示精確錯誤碼。實際 shell 摘要驗證涵蓋 API errorCode 單獨出現、舊頁面錯誤、預算耗盡及無關 errorCode；均通過。此輪改善錯誤可觀測性與摘要，實際自動領取仍未成功，不能宣稱已修復服務端限制。

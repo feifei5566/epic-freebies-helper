@@ -156,13 +156,18 @@ jobs:
               echo "Automatic CAPTCHA solving was stopped. Repeated retries cannot restore provider quota."
             } >> "$GITHUB_STEP_SUMMARY"
           elif grep -Rqs -E \
-            'Epic rejected the login challenge response' \
+            'Epic rejected the login challenge response|errors[.]com[.]epicgames[.]accountportal[.]captcha_invalid' \
             app/volumes/logs/ app/volumes/runtime/ 2>/dev/null; then
             {
               echo "## Claim not completed: Epic rejected login verification"
               echo
               echo "本次领取未完成：Epic 登录页面拒绝了验证码结果，并要求刷新页面。"
               echo
+              if grep -Rqs -F 'error_code=errors.com.epicgames.accountportal.captcha_invalid' \
+                app/volumes/logs/ app/volumes/runtime/ 2>/dev/null; then
+                echo 'Epic API error: `errors.com.epicgames.accountportal.captcha_invalid` (the verification response was not accepted).'
+                echo
+              fi
               echo "Epic rejected at least one login verification. Review the authorization screenshot and logs for the final failure. A successful hCaptcha response does not confirm login or a claim."
             } >> "$GITHUB_STEP_SUMMARY"
           elif grep -Rqs -E \
