@@ -4,13 +4,15 @@ on:
   push:
     branches:
       - codex/playwright-linux-startup
+      - codex/fix-scheduled-captcha
+      - master
 
 permissions:
   contents: read
 
 jobs:
   browser-startup:
-    if: github.repository == 'feifei5566/epic-freebies-helper' && github.ref == 'refs/heads/codex/playwright-linux-startup' && github.event_name == 'push'
+    if: github.repository == 'feifei5566/epic-freebies-helper' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -35,6 +35,13 @@
 
 账号、密码和 API Key 必须放在 `Secrets`。`LLM_PROVIDER` 和所有 `*_MODEL` 模型名建议放在 `Variables`，工作流会优先读取 Variables，并兼容已有的同名 Secrets。启动日志会打印包括 `SPATIAL_PATH_REASONER_MODEL` 在内的实际模型路由；仍保存在 Secrets 中的值会被 GitHub 自动遮罩为 `***`。
 
+### CAPTCHA 自动处理
+
+- 每周排程默认开启自动 CAPTCHA 处理，使用已配置的模型服务；仍受现有重试次数、时间和模型额度限制。
+- 如需关闭，在 `Settings → Secrets and variables → Actions → Variables` 添加 `ALLOW_SCHEDULED_CAPTCHA_SOLVING=false`。设置为 `true` 或删除此变量即可恢复默认。
+- 手动运行始终以 `Run workflow` 中的 `allow_captcha_solving` 复选框为准；默认不勾选，排程设置不会覆盖这个选择。
+- 工作流失败摘要会区分「未开启 CAPTCHA 处理」「模型每日额度耗尽」「验证码重试/时间上限」及 Epic 24 小时领取限制；失败不代表已领取成功。
+
 必须配置：
 
 | Secret | 说明 |

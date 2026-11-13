@@ -30,6 +30,19 @@ class MissingLocator:
         return 0
 
 
+class FreeCheckoutContainer:
+    def get_by_role(self, *args, **kwargs):
+        return MissingLocator()
+
+    def locator(self, selector):
+        if selector == "body":
+            return self
+        return MissingLocator()
+
+    async def inner_text(self, **kwargs):
+        return "Order Total\n$0.00"
+
+
 class SlowBodyLocator:
     def __init__(self, clock, scans):
         self.clock = clock
@@ -403,7 +416,7 @@ def test_security_recovery_does_not_consume_submission_attempts(monkeypatch):
     page = FakePage()
     game = EpicGames(page)
     button = SimpleNamespace(text_content=lambda: None)
-    purchase_payload = (object(), button)
+    purchase_payload = (FreeCheckoutContainer(), button)
     states = iter(
         [
             ("checkout", purchase_payload),
@@ -479,7 +492,7 @@ def test_initial_security_state_refreshes_checkout_before_submission(monkeypatch
         return "Add to library"
 
     button = SimpleNamespace(text_content=button_text_content)
-    states = iter([("security", None), ("checkout", (object(), button))])
+    states = iter([("security", None), ("checkout", (FreeCheckoutContainer(), button))])
     submissions = 0
 
     async def next_state(*args, **kwargs):

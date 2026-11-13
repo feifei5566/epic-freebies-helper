@@ -15,7 +15,7 @@ from extensions.llm_adapter import (
     _coerce_payload_for_schema,
     _extract_challenge_type,
     _extract_json_payload,
-    _limit_glm_provider_attempts,
+    _limit_llm_provider_attempts,
     _normalize_glm_payload,
 )
 
@@ -81,8 +81,8 @@ def test_glm_46_point_selection_preserves_existing_thinking_behavior():
     assert "thinking" not in payload
 
 
-def test_glm_provider_retry_budget_is_limited_to_two_attempts():
-    assert _limit_glm_provider_attempts() is True
+def test_llm_provider_retry_budget_is_limited_to_two_attempts():
+    assert _limit_llm_provider_attempts() is True
 
     from hcaptcha_challenger.tools.internal.providers.gemini import GeminiProvider
 

@@ -89,7 +89,12 @@ jobs:
           SPATIAL_POINT_REASONER_MODEL: ${{ vars.SPATIAL_POINT_REASONER_MODEL || secrets.SPATIAL_POINT_REASONER_MODEL }}
           SPATIAL_PATH_REASONER_MODEL: ${{ vars.SPATIAL_PATH_REASONER_MODEL || secrets.SPATIAL_PATH_REASONER_MODEL }}
           BROWSER_BACKEND: playwright
-          ALLOW_CAPTCHA_SOLVING: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_captcha_solving && 'true' || 'false' }}
+          # Scheduled claims solve CAPTCHA by default; set the repository variable
+          # ALLOW_SCHEDULED_CAPTCHA_SOLVING=false to stop for manual action instead.
+          # Manual runs always use their own checkbox, including an explicit false.
+          ALLOW_CAPTCHA_SOLVING: >-
+            ${{ ((github.event_name == 'schedule' && (vars.ALLOW_SCHEDULED_CAPTCHA_SOLVING || 'true') == 'true') ||
+            (github.event_name == 'workflow_dispatch' && inputs.allow_captcha_solving)) && 'true' || 'false' }}
           BROWSER_PROXY: ${{ secrets.BROWSER_PROXY }}
           HEADLESS: virtual
           DISABLE_BEZIER_TRAJECTORY: false
@@ -131,6 +136,36 @@ jobs:
         if: failure()
         run: |
           if grep -Rqs -E \
+            'EpicCaptchaRequiredError|CAPTCHA requires manual action; automatic solving is disabled' \
+            app/volumes/logs/ app/volumes/runtime/ 2>/dev/null; then
+            {
+              echo "## Claim not completed: CAPTCHA solving disabled"
+              echo
+              echo "本次领取未完成：登录或结账需要 CAPTCHA，但本次执行未开启自动处理。"
+              echo
+              echo 'For a manual run, select allow_captcha_solving in Run workflow. For scheduled runs, set the Actions variable ALLOW_SCHEDULED_CAPTCHA_SOLVING to true (the default).'
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif grep -Rqs -E \
+            'EpicLlmQuotaExhaustedError|LLM daily quota exhausted' \
+            app/volumes/logs/ app/volumes/runtime/ 2>/dev/null; then
+            {
+              echo "## Claim not completed: LLM daily quota exhausted"
+              echo
+              echo "本次领取未完成：模型服务的每日额度已耗尽。请等待服务商重置额度后再运行。"
+              echo
+              echo "Automatic CAPTCHA solving was stopped. Repeated retries cannot restore provider quota."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif grep -Rqs -E \
+            'EpicCaptchaBudgetExhaustedError|CAPTCHA budget exhausted' \
+            app/volumes/logs/ app/volumes/runtime/ 2>/dev/null; then
+            {
+              echo "## Claim not completed: CAPTCHA retry budget exhausted"
+              echo
+              echo "本次领取未完成：验证码或登录流程已达到重试次数或时间上限。"
+              echo
+              echo "Review the login screenshots and model responses before retrying. CAPTCHA success alone does not confirm login or a successful claim."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif grep -Rqs -E \
             'unable to download any more free games|wait 24 hours before trying again|free-game redemption rate limit detected' \
             app/volumes/logs/ app/volumes/runtime/ 2>/dev/null; then
             {

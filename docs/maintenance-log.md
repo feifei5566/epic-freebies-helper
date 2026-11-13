@@ -1843,3 +1843,12 @@
 - 修改檔案：scripts/check_vision_probe_recording.py 的離線案例統一使用既有兩秒期限，串流取消的 elapsed 上限改為三秒；docs/maintenance-log.md append-only 補記。仍保留一次 mock POST、零重試、response_stream phase、CancelledError、未讀完串流及 adapter replay 的嚴格斷言，未改寫或跳過案例。
 - 驗證與結果：須重新執行 44 項 recorder／replay 離線檢查、該檔 Ruff／Black／AST 與差異檢查，正常提交推送修正並對最新 master exact SHA 追蹤隔離 CI 至終態；最終證據保存於工作目錄隔離驗證紀錄。真實 probe 的 60 秒 deadline、正式 provider／排程與 Epic 程式均未改動，不執行全套測試、新 OAuth／憑證、真實模型、登入、CAPTCHA 或領取。
 - 本機修正結果：44 項 recorder／replay 離線案例通過；該檔 Ruff／Black、Python AST、git diff --check 通過，真實網路／OAuth／憑證讀取均為零。接續僅正常推送此修正並驗證新 master SHA。
+
+## 2026-11-13：修復排程 CAPTCHA 開關與失敗摘要，恢復測試驗證
+
+- 症狀與證據：排程 #75（run `43314309142`）及 #74（run `42113029740`）的依賴安裝、協定檢查與 Playwright 啟動均成功，登入遇到 CAPTCHA 後因 `ALLOW_CAPTCHA_SOLVING=false` 拋出 `EpicCaptchaRequiredError`。較早手動 #69 的 `EpicLlmQuotaExhaustedError` 是另一種模型每日額度問題，不能混為相同根因。
+- 根因判斷：10/4 的 workflow 表達式只允許 `workflow_dispatch` 的單次 input 開啟，`schedule` 永遠得到 false；通用失敗摘要未指出這個設定原因。既有測試另外仍引用已更名的 `_limit_glm_provider_attempts`，兩個結帳測試的空物件 fixture 也未提供新增零元總額檢查需要的 DOM。
+- 使用者指示：本次明確要求測試並修復，並選擇每週排程遇到 CAPTCHA 時自動處理、繼續領取；本次測試要求優先於 AGENTS.md 舊有的禁止執行測試規則。
+- 修改檔案：`.github/workflows/epic-gamer.yml` 的排程預設開啟自動處理，提供 `ALLOW_SCHEDULED_CAPTCHA_SOLVING=false` opt-out；手動執行仍完全依本次 checkbox 決定。新增 CAPTCHA 關閉、模型每日額度、CAPTCHA 預算耗盡的失敗摘要。同步更新中英文 workflow README、`scripts/check_runtime_controls.py`、`tests/test_glm_adapter.py` 與 `tests/test_checkout_state_machine.py`；讓既有 `browser-startup-check.yml` 同時檢查修復分支及 master。
+- 本機驗證結果：鎖定依賴安裝成功；pytest `97 passed, 2 skipped`（兩項為需顯式啟用的真實瀏覽器 smoke checks）；15 項 runtime controls 離線檢查、以 GitHub 官方 `@actions/expressions` 引擎執行的 84 種事件/input/變數組合、6 種實際 shell 失敗摘要情境及內嵌 shell 語法檢查通過；Ruff 通過。沒有更改 solver、API key、模型、重試上限、零元檢查或訂單核對邏輯。
+- 後續驗證：推送修復分支後追蹤 Linux 瀏覽器 CI，並用修復版本啟動正式 workflow 確認實際登入／領取結果；本機通過不代表已成功領取。
