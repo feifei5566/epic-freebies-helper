@@ -1852,3 +1852,9 @@
 - 修改檔案：`.github/workflows/epic-gamer.yml` 的排程預設開啟自動處理，提供 `ALLOW_SCHEDULED_CAPTCHA_SOLVING=false` opt-out；手動執行仍完全依本次 checkbox 決定。新增 CAPTCHA 關閉、模型每日額度、CAPTCHA 預算耗盡的失敗摘要。同步更新中英文 workflow README、`scripts/check_runtime_controls.py`、`tests/test_glm_adapter.py` 與 `tests/test_checkout_state_machine.py`；讓既有 `browser-startup-check.yml` 同時檢查修復分支及 master。
 - 本機驗證結果：鎖定依賴安裝成功；pytest `97 passed, 2 skipped`（兩項為需顯式啟用的真實瀏覽器 smoke checks）；15 項 runtime controls 離線檢查、以 GitHub 官方 `@actions/expressions` 引擎執行的 84 種事件/input/變數組合、6 種實際 shell 失敗摘要情境及內嵌 shell 語法檢查通過；Ruff 通過。沒有更改 solver、API key、模型、重試上限、零元檢查或訂單核對邏輯。
 - 後續驗證：推送修復分支後追蹤 Linux 瀏覽器 CI，並用修復版本啟動正式 workflow 確認實際登入／領取結果；本機通過不代表已成功領取。
+
+### 2026-11-13：真實試跑 #76 揭露 Epic 拒絕 challenge response，修正等待及有限重試
+
+- 證據與根因：修復分支 `6d8feab6` 的 Linux CI `43346483838` 通過；正式 #76（`43346584088`）確認 `captcha_solving=True` 且一次 hCaptcha challenge success。其登入截圖顯示 Epic 的 `Incorrect response. Please refresh the page.`，仍在 email/Continue 頁面；程式卻等待密碼欄位 30 秒後拋出模糊的 `EpicAuthenticationFatalError`。這證明 hCaptcha success 不是 Epic 接受登入的證據；Epic 拒絕的服務端原因無法僅由畫面判定。
+- 修改檔案與行為：`app/services/epic_authorization_service.py` 精確辨識這個可刷新的錯誤，拋出可重試的 `EpicLoginChallengeRejectedError`，交回既有登入重試迴圈清除舊頁面狀態；共用三次 CAPTCHA 和 300 秒 deadline 不重設。更新 workflow 摘要、中英文 README 及 runtime-control 的假頁面，新增 `tests/test_epic_authorization.py` 六項回歸案例；既有 Linux workflow 增加使用鎖定依賴及假憑證的 unit-tests job。
+- 驗證結果：本機全套 `103 passed, 2 skipped`，15 項離線 controls 通過。新案例涵蓋立即偵測、hCaptcha 成功後 Epic 拒絕、正常密碼頁、回到重試迴圈及刷新仍受共用預算限制。此修正不保證 Epic 下次會接受登入；推送後另追蹤新版本 CI 及正式試跑。

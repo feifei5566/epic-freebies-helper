@@ -179,7 +179,11 @@ async def verify_shared_retry_budgets(passed):
     )
     extract(
         'app/services/epic_authorization_service.py',
-        {'EpicAuthenticationFatalError', 'EpicManualActionRequiredError'},
+        {
+            'EpicAuthenticationFatalError',
+            'EpicManualActionRequiredError',
+            'EpicLoginChallengeRejectedError',
+        },
         namespace,
     )
     methods = {
@@ -233,8 +237,12 @@ async def verify_shared_retry_budgets(passed):
     async def noop(*args, **kwargs):
         return None
 
+    async def empty_body():
+        return ''
+
     def auth_subject():
         subject = Auth(OfflinePage())
+        subject._page_body_text = empty_body
         subject._has_visible_hcaptcha = yes
         subject._password_step_visible = no
         subject._has_blocking_talon_overlay = no

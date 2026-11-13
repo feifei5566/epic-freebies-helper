@@ -40,6 +40,7 @@ Keep account credentials and API keys in `Secrets`. Store `LLM_PROVIDER` and all
 - Scheduled runs enable CAPTCHA solving by default using the configured model provider, within the existing retry, time, and quota limits.
 - To disable it, set the Actions repository variable `ALLOW_SCHEDULED_CAPTCHA_SOLVING=false` under `Settings → Secrets and variables → Actions → Variables`. Set it to `true` or remove it to restore the default.
 - Manual runs always follow the `allow_captcha_solving` checkbox in `Run workflow`. It is unchecked by default; the scheduled setting never overrides this choice.
+- If Epic reports `Incorrect response. Please refresh the page.`, the flow restarts login within the existing shared three-challenge/300-second authentication budget. Persistent rejection still fails and is never treated as a successful login.
 - Failure summaries distinguish disabled CAPTCHA solving, exhausted model daily quota, exhausted CAPTCHA retry/time budgets, and Epic's 24-hour redemption limit. A failed run does not confirm a successful claim.
 
 Required in all cases:

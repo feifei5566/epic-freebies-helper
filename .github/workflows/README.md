@@ -40,6 +40,7 @@
 - 每周排程默认开启自动 CAPTCHA 处理，使用已配置的模型服务；仍受现有重试次数、时间和模型额度限制。
 - 如需关闭，在 `Settings → Secrets and variables → Actions → Variables` 添加 `ALLOW_SCHEDULED_CAPTCHA_SOLVING=false`。设置为 `true` 或删除此变量即可恢复默认。
 - 手动运行始终以 `Run workflow` 中的 `allow_captcha_solving` 复选框为准；默认不勾选，排程设置不会覆盖这个选择。
+- 如果 Epic 显示 `Incorrect response. Please refresh the page.`，程序会重新进入登录流程，所有刷新共用原有的三次 CAPTCHA／300 秒登录预算；持续拒绝仍会失败，不会被当成登录成功。
 - 工作流失败摘要会区分「未开启 CAPTCHA 处理」「模型每日额度耗尽」「验证码重试/时间上限」及 Epic 24 小时领取限制；失败不代表已领取成功。
 
 必须配置：
