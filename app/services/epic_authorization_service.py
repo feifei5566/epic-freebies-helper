@@ -8,8 +8,10 @@
 import asyncio
 import json
 import os
+import re
 import time
 from contextlib import suppress
+from urllib.parse import urlsplit
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 
@@ -78,6 +80,7 @@ class EpicAuthorization:
         self._last_captcha_totp_refresh_at = 0.0
 
     async def _on_response_anything(self, r: Response):
+        await self._log_auth_rejection(r)
         if r.request.method != "POST" or "talon" in r.url:
             return
 
@@ -95,6 +98,53 @@ class EpicAuthorization:
                 self._is_login_success_signal.put_nowait(result)
             elif "/account/v2/refresh-csrf" in r.url and result.get("success", False) is True:
                 self._is_refresh_csrf_signal.put_nowait(result)
+
+    async def _log_auth_rejection(self, response: Response) -> None:
+        """Observe pre-login failures without recording credentials or challenge tokens."""
+        with suppress(Exception):
+            url = urlsplit(response.url)
+            host = url.hostname or ""
+            if url.scheme != "https" or not (
+                host == "epicgames.com" or host.endswith(".epicgames.com")
+            ):
+                return
+            if "talon" in host or url.path.startswith("/talon/"):
+                endpoint = "talon"
+            elif url.path.startswith("/id/api/"):
+                # Unknown paths may contain identifiers. Never log their raw URL,
+                # query, headers or body, even when Epic returns a non-JSON error.
+                known_paths = {
+                    "/id/api/login",
+                    "/id/api/login/options",
+                    "/id/api/login/mfa",
+                    "/id/api/reputation",
+                    "/id/api/reputation/verify",
+                    "/id/api/csrf",
+                }
+                endpoint = url.path if url.path in known_paths else "/id/api/[other]"
+            else:
+                return
+
+            result = {}
+            with suppress(Exception):
+                result = await response.json()
+            code = result.get("errorCode") if isinstance(result, dict) else None
+            if response.status < 400 and not code:
+                return
+            safe_code = "unavailable"
+            if code:
+                safe_code = (
+                    code
+                    if isinstance(code, str)
+                    and re.fullmatch(r"errors\.com\.epicgames\.[a-zA-Z0-9_.-]{1,120}", code)
+                    else "unrecognized"
+                )
+            logger.warning(
+                "Epic authentication response rejected | endpoint={} | status={} | error_code={}",
+                endpoint,
+                response.status,
+                safe_code,
+            )
 
     @staticmethod
     def _drain_queue(queue: asyncio.Queue):

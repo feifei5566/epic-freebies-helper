@@ -5,6 +5,7 @@ on:
     branches:
       - codex/playwright-linux-startup
       - codex/fix-scheduled-captcha
+      - codex/diagnose-epic-login
       - master
 
 permissions:

@@ -1866,3 +1866,18 @@
 - 結果：修復排程固定關閉、登入拒絕被誤報成密碼欄位缺失及過時測試碼；實際領取仍受 Epic 拒絕驗證結果阻擋，不能宣稱端到端成功。沒有調高重試上限、更換 API key、改模型或購買服務；不重跑同一版本消耗額度。
 - 摘要補強：`epic-gamer.yml` 同時識別「三次 challenge 均未清除」與「共享 300 秒登入逾時」兩個實際 terminal error 訊息，兩種 shell 摘要案例均通過。這項變更僅影響錯誤呈現。
 - 外部排查依據：Epic 官方的 [Incorrect response 說明](https://www.epicgames.com/help/c-45487929/c-Trending_0/erreur-reponse-incorrecte-veuillez-rafraichir-la-page-a11863449) 將非主機帳號連結情境的這個錯誤連結至登入 CAPTCHA 失敗。可先用一般瀏覽器／其他網路驗證帳號能否登入；目前證據不足以把根因指定為密碼錯誤、IP 限制或特定模型問題。
+
+### 2026-11-13：一般 Chrome 對照與登入前拒絕診斷
+
+- 症狀與實測：依使用者要求操作 Mac 的一般 Chrome；使用者確認瀏覽器與 workflow 是同一帳號。既有登入可通過帳號選擇並進入帳號設定頁。獨立無痕視窗使用相同登入入口及瀏覽器既存信箱後，Continue 正常進入密碼頁，沒有重現 Actions 的 CAPTCHA 拒絕；未輸入密碼或完成全新登入。使用者希望沿用原視窗，已返回既有登入測試。
+- 領取限制：本週 Knightica 的官方商品頁在此已登入瀏覽器顯示 `This content is currently unavailable in your platform or region.`，搜尋也沒有此商品的店內結果。沒有更改帳號地區、代理或領取其他無關商品；沒有建立新訂單。不能由一般瀏覽器的舊登入成功推論 Actions 的新登入或每週領取已修復。
+- 根因判斷：舊登入 observer 在 GET 或 URL 包含 talon 時直接返回，且只記錄 `/id/api/login` 的錯誤；登入前驗證遭拒的 HTTP 狀態與錯誤碼可能完全缺失。既有 hCaptcha `pass` 僅是前端解題結果，依 [hCaptcha 官方驗證說明](https://docs.hcaptcha.com/#verify-the-user-response-server-side)，網站仍需自行驗證 token；目前不能指定是 IP、瀏覽器、token 效期或其他判定。
+- 修改檔案：`app/services/epic_authorization_service.py` 增加 HTTPS Epic 登入／talon 回應的拒絕診斷，限定輸出端點類別、HTTP status 與合法 Epic errorCode，不輸出 query、headers、body、token 或未知路徑。保留原本登入訊號與重試上限。`tests/test_epic_authorization.py` 增加 GET／talon、HTTP 200 錯誤、非 JSON、遮蔽內容、第三方忽略及原登入錯誤訊號案例；`browser-startup-check.yml` 加入本修復分支。
+- 驗證：本機 `116 passed, 2 skipped`，15 項 runtime controls、Ruff 與 `git diff --check` 通過。後續用此版本受限試跑取得實際錯誤證據；本補丁是診斷改善，尚未宣稱排除 Epic 的服務端拒絕。
+
+### 2026-11-13：#78 確認 Epic captcha_invalid 與本週商品地區差異
+
+- 真實結果：診斷提交 `008e64e9` 的 Linux CI `43353809136` 兩個 job 成功，unit-tests 為 `116 passed, 2 skipped`。正式 #78（run `43353892980`／job `131651190636`）三次 CAPTCHA 依序為 failure、success、success；後兩次成功後約 0.5 秒，Epic 登入前 API 都回 HTTP 400、`errors.com.epicgames.accountportal.captcha_invalid`。刷新後仍相同，最後在共享三次上限停止；沒有第四次解題、成功登入或新訂單。
+- 根因判斷：已從模糊頁面提示進一步確認 Epic API 不接受 CAPTCHA 驗證結果。回覆發生在密碼頁之前；此錯誤碼未揭露 IP、瀏覽器、token 或風控細節，無法由目前證據判定更細的服務端原因。模型另有暫時 ServerError，但後續解題 success 仍遭 Epic 拒絕，不能把全部失敗歸因於模型解題。
+- 商品對照：對公開 `freeGamesPromotions` API 使用 `country`／`allowCountries` 參數唯讀比對，US 回傳 Knightica 的當期零元優惠（11/12 16:00 UTC 至 11/19 16:00 UTC），TW 回傳清單沒有 Knightica；這與同帳號一般 Chrome 的平台／地區不可用提示一致。沒有修改帳號地區、傳送瀏覽器 cookies 到 Actions 或領取其他遊戲。
+- 修改與驗證：`epic-gamer.yml` 摘要也以這個 API errorCode 判定登入驗證拒絕；有實際紀錄時顯示精確錯誤碼。實際 shell 摘要驗證涵蓋 API errorCode 單獨出現、舊頁面錯誤、預算耗盡及無關 errorCode；均通過。此輪改善錯誤可觀測性與摘要，實際自動領取仍未成功，不能宣稱已修復服務端限制。
